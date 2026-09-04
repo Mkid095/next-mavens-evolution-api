@@ -19,7 +19,6 @@ RUN npm ci --silent
 COPY ./src ./src
 COPY ./public ./public
 COPY ./prisma ./prisma
-COPY ./node_modules/.prisma ./node_modules/.prisma
 COPY ./.env.example ./.env
 COPY ./runWithProvider.js ./
 
@@ -27,11 +26,8 @@ COPY ./Docker ./Docker
 
 RUN chmod +x ./Docker/scripts/* && dos2unix ./Docker/scripts/*
 
-# Copy pre-generated Prisma client (with query engine binary) to override
-# whatever npm ci installed (avoiding SIGSEGV in prisma CLI at build time)
-COPY ./node_modules/.prisma ./node_modules/.prisma
-
-RUN npx tsup
+# Generate Prisma client and compile TypeScript
+RUN npx prisma generate --schema prisma/postgresql-schema.prisma && npx tsup
 
 FROM node:20-slim AS final
 
@@ -63,17 +59,6 @@ EXPOSE 8080
 COPY <<'EOF' /entrypoint.sh
 #!/bin/sh
 set -e
-
-# Determine postgres host: use POSTGRES_HOST env if set, else fall back to 'postgres'
-PGHOST="${POSTGRES_HOST:-postgres}"
-
-# Ensure evolution DB exists (quoted heredoc so $vars expand at container RUNTIME)
-if PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$PGHOST" -U "${POSTGRES_USER:-fidscript}" -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='evolution'" | grep -q 1; then
-  echo "evolution database already exists"
-else
-  echo "Creating evolution database..."
-  PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$PGHOST" -U "${POSTGRES_USER:-fidscript}" -d postgres -c "CREATE DATABASE evolution"
-fi
 
 # Symlink migrations folder so Prisma CLI can find it
 if [ ! -L prisma/migrations ] && [ -d prisma/postgresql-migrations ]; then

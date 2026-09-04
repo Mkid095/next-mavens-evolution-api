@@ -1,0 +1,66 @@
+version: "3.8"
+
+services:
+  platform-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: platform-api
+    restart: always
+    ports:
+      - "127.0.0.1:8080:8080"
+    env_file:
+      - .env.phase1
+    environment:
+      POSTGRES_HOST: platform-postgres
+      POSTGRES_USER: fidscript
+      POSTGRES_PASSWORD: fidscript_phase1_password
+    depends_on:
+      platform-redis:
+        condition: service_healthy
+      platform-postgres:
+        condition: service_healthy
+    volumes:
+      - platform_instances:/fidscript/instances
+    networks:
+      - platform-net
+
+  platform-redis:
+    image: redis:7-alpine
+    container_name: platform-redis
+    command: --port 6379 --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - platform_redis:/data
+    networks:
+      - platform-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  platform-postgres:
+    image: postgres:15-alpine
+    container_name: platform-postgres
+    environment:
+      POSTGRES_DB: fidscript
+      POSTGRES_USER: fidscript
+      POSTGRES_PASSWORD: fidscript_phase1_password
+    volumes:
+      - platform_postgres:/var/lib/postgresql/data
+    networks:
+      - platform-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fidscript -d fidscript"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+networks:
+  platform-net:
+    driver: bridge
+
+volumes:
+  platform_instances:
+  platform_redis:
+  platform_postgres:
