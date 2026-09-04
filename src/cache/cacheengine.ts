@@ -1,9 +1,11 @@
 import { ICache } from '@api/abstract/abstract.cache';
 import { CacheConf, ConfigService } from '@config/env.config';
 import { Logger } from '@config/logger.config';
+import { RedisClientType } from 'redis';
 
 import { LocalCache } from './localcache';
 import { RedisCache } from './rediscache';
+import { redisClient } from './rediscache.client';
 
 const logger = new Logger('CacheEngine');
 
@@ -25,7 +27,15 @@ export class CacheEngine {
     }
   }
 
-  public getEngine() {
+  public getEngine(): ICache {
     return this.engine;
+  }
+
+  /**
+   * Access the raw Redis client for operations not in ICache
+   * (e.g., sorted sets for sliding window rate limiting).
+   */
+  public getRawRedis(): RedisClientType | null {
+    return redisClient.getConnection();
   }
 }

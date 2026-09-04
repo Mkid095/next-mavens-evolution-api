@@ -435,6 +435,22 @@ export type Domain = {
   SUPPORT_URL: string;
 };
 
+/**
+ * Platform Configuration — Phase 1 Viventure infrastructure
+ */
+export type Platform = {
+  ENABLED: boolean;
+  ENCRYPTION_KEY: string;
+  IDEMPOTENCY_TTL_SECONDS: number;
+  WEBHOOK_TIMEOUT_MS: number;
+  WEBHOOK_MAX_RETRIES: number;
+  WEBHOOK_RETRY_BASE_DELAY_MS: number;
+  OUTBOX_POLL_INTERVAL_MS: number;
+  OUTBOX_BATCH_SIZE: number;
+  OUTBOX_MAX_RETRIES: number;
+  INTERNAL_API_KEY: string;
+};
+
 export interface Env {
   SERVER: HttpServer;
   CORS: Cors;
@@ -475,6 +491,7 @@ export interface Env {
   ANTI_BAN: AntiBan;
   BRANDING: Branding;
   DOMAIN: Domain;
+  PLATFORM: Platform;
   PRODUCTION?: Production;
 }
 
@@ -925,7 +942,7 @@ export class ConfigService {
         ALLOWED_IPS: process.env?.METRICS_ALLOWED_IPS,
       },
       TELEMETRY: {
-        ENABLED: process.env?.TELEMETRY_ENABLED === undefined || process.env?.TELEMETRY_ENABLED === 'true',
+        ENABLED: process.env?.TELEMETRY_ENABLED === 'true',
         URL: process.env?.TELEMETRY_URL,
       },
       PROXY: {
@@ -979,6 +996,18 @@ export class ConfigService {
         CDN_URL: process.env.DOMAIN_CDN_URL || '',
         DOCS_URL: process.env.DOMAIN_DOCS_URL || 'https://nextmavens.com/docs',
         SUPPORT_URL: process.env.DOMAIN_SUPPORT_URL || 'https://nextmavens.com/support',
+      },
+      PLATFORM: {
+        ENABLED: process.env.PLATFORM_ENABLED === 'true',
+        ENCRYPTION_KEY: process.env.PLATFORM_ENCRYPTION_KEY || '',
+        IDEMPOTENCY_TTL_SECONDS: Number.parseInt(process.env.PLATFORM_IDEMPOTENCY_TTL_SECONDS || '86400'),
+        WEBHOOK_TIMEOUT_MS: Number.parseInt(process.env.PLATFORM_WEBHOOK_TIMEOUT_MS || '5000'),
+        WEBHOOK_MAX_RETRIES: Number.parseInt(process.env.PLATFORM_WEBHOOK_MAX_RETRIES || '5'),
+        WEBHOOK_RETRY_BASE_DELAY_MS: Number.parseInt(process.env.PLATFORM_WEBHOOK_RETRY_BASE_DELAY_MS || '1000'),
+        OUTBOX_POLL_INTERVAL_MS: Number.parseInt(process.env.PLATFORM_OUTBOX_POLL_INTERVAL_MS || '1000'),
+        OUTBOX_BATCH_SIZE: Number.parseInt(process.env.PLATFORM_OUTBOX_BATCH_SIZE || '10'),
+        OUTBOX_MAX_RETRIES: Number.parseInt(process.env.PLATFORM_OUTBOX_MAX_RETRIES || '3'),
+        INTERNAL_API_KEY: process.env.PLATFORM_INTERNAL_API_KEY || '',
       },
     };
   }

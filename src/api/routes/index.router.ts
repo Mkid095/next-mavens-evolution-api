@@ -23,7 +23,7 @@ import { ProxyRouter } from './proxy.router';
 import { MessageRouter } from './sendMessage.router';
 import { SettingsRouter } from './settings.router';
 import { TemplateRouter } from './template.router';
-import { V1Router } from './v1.router';
+import { platformRouter } from '@platform/platform.router';
 
 enum HttpStatus {
   OK = 200,
@@ -258,8 +258,8 @@ router
   .use('/campaign', new CampaignRouter(...guards).router)
   // Analytics Routes (Next Mavens Fidscript)
   .use('/analytics', new AnalyticsRouter(...guards).router)
-  // Branded API v1 Routes
-  .use('/api/v1', V1Router)
+  // Platform Routes (Phase 1 — /api/v1 public contract)
+  .use('/api/v1', platformRouter)
   .use('', new ChannelRouter(configService, ...guards).router)
   .use('', new EventRouter(configService, ...guards).router)
   .use('', new StorageRouter(...guards).router);
