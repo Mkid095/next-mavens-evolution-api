@@ -441,6 +441,7 @@ export type Domain = {
 export type Platform = {
   ENABLED: boolean;
   ENCRYPTION_KEY: string;
+  PUBLIC_API_BASE: string;
   IDEMPOTENCY_TTL_SECONDS: number;
   WEBHOOK_TIMEOUT_MS: number;
   WEBHOOK_MAX_RETRIES: number;
@@ -1000,6 +1001,7 @@ export class ConfigService {
       PLATFORM: {
         ENABLED: process.env.PLATFORM_ENABLED === 'true',
         ENCRYPTION_KEY: process.env.PLATFORM_ENCRYPTION_KEY || '',
+        PUBLIC_API_BASE: process.env.PUBLIC_API_BASE || 'https://whatsapp.nextmavens.com/api/v1',
         IDEMPOTENCY_TTL_SECONDS: Number.parseInt(process.env.PLATFORM_IDEMPOTENCY_TTL_SECONDS || '86400'),
         WEBHOOK_TIMEOUT_MS: Number.parseInt(process.env.PLATFORM_WEBHOOK_TIMEOUT_MS || '5000'),
         WEBHOOK_MAX_RETRIES: Number.parseInt(process.env.PLATFORM_WEBHOOK_MAX_RETRIES || '5'),
