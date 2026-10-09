@@ -1,3 +1,4 @@
+import { waMonitor } from '@api/server.module';
 import crypto from 'crypto';
 import { Request, Response, Router } from 'express';
 
@@ -179,6 +180,25 @@ router.get(
         return;
       }
 
+      // Try to attach the live QR code from the engine (in-memory state).
+      // This gives the dashboard a polling fallback when SSE delivery is
+      // delayed or if the SSE channel name doesn't match the publisher.
+      let qrCode: { base64: string | null; pairingCode: string | null } | null = null;
+      try {
+        const engineInstance = waMonitor.waInstances[instance.name];
+        if (engineInstance) {
+          const liveQr = (engineInstance as any).qrCode;
+          if (liveQr?.base64) {
+            qrCode = {
+              base64: liveQr.base64 ?? null,
+              pairingCode: liveQr.pairingCode ?? null,
+            };
+          }
+        }
+      } catch {
+        /* engine not initialized yet — that's fine, no QR to return */
+      }
+
       res.json({
         id: instance.publicId,
         name: instance.name,
@@ -187,6 +207,7 @@ router.get(
         capabilities: instance.capabilities,
         lastConnectedAt: instance.lastConnectedAt,
         createdAt: instance.createdAt,
+        ...(qrCode ? { qrCode } : {}),
       });
     } catch {
       res.status(500).json({ error: 'FETCH_ERROR' });

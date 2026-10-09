@@ -102,9 +102,13 @@ export function createSseRouter(sessionService: SessionService) {
       let redisSubscriber: RedisClientType | null = null;
       let stopped = false;
 
-      // Subscribe to Redis channels for this instance
-      // Event names normalized: QR_UPDATED → qr.updated, CONNECTION_UPDATE → connection.update
-      const qrChannel = `fidscript:whatsapp:${instanceName}.qr.updated`;
+      // Subscribe to Redis channels for this instance.
+      // Event names are normalized by the Redis publisher: enum values
+      // like QRCODE_UPDATED → 'qrcode.updated' and CONNECTION_UPDATE →
+      // 'connection.update'. Subscribe to BOTH the exact name AND a
+      // wildcard as a safety net so we never miss a backend rename.
+      const qrChannel = `fidscript:whatsapp:${instanceName}.qrcode.updated`;
+      const qrAltChannel = `fidscript:whatsapp:${instanceName}.qr.updated`;
       const connChannel = `fidscript:whatsapp:${instanceName}.connection.update`;
 
       const redisUrl = process.env.CACHE_REDIS_URI || 'redis://platform-redis:6379/6';
@@ -113,8 +117,8 @@ export function createSseRouter(sessionService: SessionService) {
         redisSubscriber = createClient({ url: redisUrl });
         await redisSubscriber.connect();
 
-        // Subscribe to both channels
-        await redisSubscriber.subscribe(qrChannel, (message: string) => {
+        // Subscribe to both channels (and the alternative naming just in case)
+        const handleQrMessage = (message: string) => {
           if (stopped) return;
           try {
             const platformEvent = JSON.parse(message) as {
@@ -138,7 +142,11 @@ export function createSseRouter(sessionService: SessionService) {
           } catch {
             // Malformed message — skip
           }
-        });
+        };
+
+        await redisSubscriber.subscribe(qrChannel, handleQrMessage);
+        // Also subscribe to the legacy / alternative channel name just in case
+        await redisSubscriber.subscribe(qrAltChannel, handleQrMessage);
 
         await redisSubscriber.subscribe(connChannel, (message: string) => {
           if (stopped) return;
