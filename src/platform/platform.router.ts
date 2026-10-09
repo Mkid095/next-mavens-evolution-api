@@ -11,6 +11,14 @@ function hashPassword(password: string): string {
 import { platformRoutes } from './routes/platform.routes';
 import { webhookRoutes } from './routes/webhook.routes';
 import { messageRoutes } from './routes/message.routes';
+import { messagePublicRoutes } from './routes/message-public.routes';
+import { instanceRoutes } from './routes/instance.routes';
+import { contactRoutes } from './routes/contact.routes';
+import { groupRoutes } from './routes/group.routes';
+import { authRouter, setSessionService, getSessionService } from './routes/auth.routes';
+import { createSseRouter } from './routes/sse.routes';
+import { mcpRouter } from './routes/mcp.routes';
+import { SessionService } from './services/session.service';
 import { platformAuthMiddleware } from './middleware/platform-auth.middleware';
 import { tenantResolveMiddleware } from './middleware/tenant-resolve.middleware';
 import { idempotencyMiddleware } from './middleware/idempotency.middleware';
@@ -18,6 +26,7 @@ import { scopeEnforceMiddleware } from './middleware/scope-enforce.middleware';
 import { platformRateLimitMiddleware } from './middleware/platform-rate-limit.middleware';
 import { entitlementMiddleware } from './middleware/entitlement.middleware';
 import { AuditService } from './services/audit.service';
+import { hybridAuth } from './middleware/hybrid-auth.middleware';
 
 const router: Router = Router();
 const auditService = new AuditService();
@@ -29,7 +38,6 @@ const auditService = new AuditService();
 const middlewareChain = [
   platformAuthMiddleware.authenticate,
   tenantResolveMiddleware.resolve,
-  idempotencyMiddleware.check,
   scopeEnforceMiddleware.enforce,
   platformRateLimitMiddleware.apply,
   entitlementMiddleware.checkMessageLimit,
@@ -106,9 +114,50 @@ router.post('/platform/onboard', async (req: Request, res: Response) => {
 });
 
 /**
- * Mount account/user routes
+ * Auth routes (unauthenticated + session-authenticated).
+ * Session service must be initialised at startup.
+ */
+router.use('/platform/auth', authRouter);
+
+/**
+ * SSE real-time event stream for instance QR/connection state.
+ * Authenticated via session cookie.
+ */
+router.use('/platform/sse', createSseRouter(getSessionService()));
+
+/**
+ * MCP (Model Context Protocol) endpoint for AI agent integration.
+ * Auth: API key (X-API-Key header)
+ */
+router.use('/platform/mcp', mcpRouter);
+
+/**
+ * Web console instance routes — session auth + API key auth.
+ * Mount BEFORE platformRoutes so more-specific instance paths are matched first.
+ * hybridAuth accepts EITHER X-API-Key OR sessionId cookie.
+ */
+const hybridChain = [hybridAuth(getSessionService()), tenantResolveMiddleware.resolve];
+router.use('/accounts', hybridChain, instanceRoutes);
+
+/**
+ * Mount account/user routes (API-key auth only).
  */
 router.use('/accounts', middlewareChain, platformRoutes);
+router.use('/accounts', middlewareChain, contactRoutes);
+router.use('/accounts', middlewareChain, groupRoutes);
+
+/**
+ * Mount instance-scoped message command route.
+ * Uses hybrid auth (session cookie or API key).
+ */
+const hybridInstanceChain = [
+  hybridAuth(getSessionService()),
+  tenantResolveMiddleware.resolve,
+  idempotencyMiddleware.check,
+  platformRateLimitMiddleware.apply,
+  entitlementMiddleware.checkMessageLimit,
+];
+router.use('/instances', hybridInstanceChain, messageRoutes);
 
 /**
  * Mount instance-scoped message command route.
@@ -122,6 +171,12 @@ const instanceChain = [
   entitlementMiddleware.checkMessageLimit,
 ];
 router.use('/instances', instanceChain, messageRoutes);
+
+/**
+ * Mount publicId-based message route.
+ * POST /api/v1/messages/send  — body: { instancePublicId, number, text, type? }
+ */
+router.use('/messages', messagePublicRoutes);
 
 /**
  * Mount webhook routes
@@ -156,9 +211,9 @@ router.get('/platform/health', async (req: Request, res: Response) => {
 });
 
 /**
- * Get current tenant info
+ * Get current tenant info — hybrid auth (session or API key)
  */
-router.get('/me', middlewareChain, async (req: Request, res: Response) => {
+router.get('/me', hybridAuth(getSessionService()), tenantResolveMiddleware.resolve, async (req: Request, res: Response) => {
   const platformTenant = (req as Request & { platformTenant?: { accountId: string; publicId: string; status: string; plan: { planId: string; name: string } } }).platformTenant;
   if (!platformTenant) {
     res.status(401).json({ error: 'UNAUTHORIZED' });

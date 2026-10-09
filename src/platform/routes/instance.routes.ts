@@ -208,6 +208,8 @@ router.get(
 
       res.json({
         id: instance.publicId,
+        internalId: instance.id, // engine CUID, used by /messages/send
+        publicId: instance.publicId,
         name: instance.name,
         status: instance.status,
         phoneNumber: instance.phoneNumber,

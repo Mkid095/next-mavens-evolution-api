@@ -44,13 +44,24 @@ router.post(
 
     const instanceId = req.params.id;
 
-    // Verify instance exists and belongs to this tenant
-    const instance = await platformRepository.instance.findUnique({
+    // Verify the PlatformInstance exists and belongs to this tenant.
+    // The :id in this route is the internal PlatformInstance CUID.
+    const platformInstance = await platformRepository.platformInstance.findUnique({
       where: { id: instanceId },
     });
 
-    if (!instance || instance.platformAccountId !== platformTenant.accountId) {
+    if (!platformInstance || platformInstance.accountId !== platformTenant.accountId) {
       res.status(404).json({ error: 'NOT_FOUND', message: 'Instance not found' });
+      return;
+    }
+
+    // Resolve the engine Instance by name (PlatformInstance.name = Instance.name = waMonitor key).
+    const instance = await platformRepository.instance.findFirst({
+      where: { name: platformInstance.name },
+    });
+
+    if (!instance) {
+      res.status(404).json({ error: 'NOT_FOUND', message: 'Engine instance not provisioned' });
       return;
     }
 
@@ -65,7 +76,7 @@ router.post(
         data: {
           idempotencyKey: idempotencyKey ?? `inline_${messageId}`,
           accountId: platformTenant.accountId,
-          instanceId,
+          instanceId: platformInstance.id,
           apiKeyId: (req as Request & { platformKey?: { apiKeyId: string } }).platformKey?.apiKeyId ?? '',
           messageId,
           type: type ?? 'text',
