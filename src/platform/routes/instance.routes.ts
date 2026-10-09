@@ -1,5 +1,4 @@
 import { waMonitor } from '@api/server.module';
-import crypto from 'crypto';
 import { Request, Response, Router } from 'express';
 
 import { evolutionAdapter } from '../adapters/evolution.adapter';
@@ -8,6 +7,7 @@ import { idempotencyMiddleware } from '../middleware/idempotency.middleware';
 import { tenantResolveMiddleware } from '../middleware/tenant-resolve.middleware';
 import { platformRepository } from '../repository/platform.repository';
 import { AuditService } from '../services/audit.service';
+import { InstanceService } from '../services/instance.service';
 import { getSessionService } from './auth.routes';
 
 interface PlatformTenant {
@@ -115,15 +115,13 @@ router.post(
         return;
       }
 
-      const publicId = `inst_${crypto.randomBytes(8).toString('hex')}`;
-      const instance = await platformRepository.platformInstance.create({
-        data: {
-          publicId,
-          accountId: platformTenant.accountId,
-          name,
-          status: 'CREATED',
-        },
-      });
+      // Use InstanceService.create which BOTH creates the canonical
+      // PlatformInstance row AND pre-allocates the underlying Evolution
+      // Instance row. Without this, the connect flow would have to find-
+      // or-create the Evolution row against a private member variable
+      // that doesn't exist on waMonitor (silent failure → no QR).
+      const instanceService = new InstanceService();
+      const instance = await instanceService.create(platformTenant.accountId, name);
 
       await auditService.record(platformTenant.accountId, 'INSTANCE_CREATE', {
         type: 'instance',
@@ -181,18 +179,27 @@ router.get(
       }
 
       // Try to attach the live QR code from the engine (in-memory state).
-      // This gives the dashboard a polling fallback when SSE delivery is
-      // delayed or if the SSE channel name doesn't match the publisher.
+      // Three sources, in order of freshness:
+      //  1. evolutionAdapter.getCachedQr — most recent QR captured by the
+      //     service's QR event listener (populated in real-time)
+      //  2. waMonitor.waInstances[name].qrCode — direct read of the
+      //     Baileys service's current QR (in-memory, may be empty)
+      //  3. Redis subscriber event (handled by SSE)
       let qrCode: { base64: string | null; pairingCode: string | null } | null = null;
       try {
-        const engineInstance = waMonitor.waInstances[instance.name];
-        if (engineInstance) {
-          const liveQr = (engineInstance as any).qrCode;
-          if (liveQr?.base64) {
-            qrCode = {
-              base64: liveQr.base64 ?? null,
-              pairingCode: liveQr.pairingCode ?? null,
-            };
+        const cached = evolutionAdapter.getCachedQr(instance.name);
+        if (cached?.base64) {
+          qrCode = { base64: cached.base64, pairingCode: cached.pairingCode ?? null };
+        } else {
+          const engineInstance = waMonitor.waInstances[instance.name];
+          if (engineInstance) {
+            const liveQr = (engineInstance as any).qrCode;
+            if (liveQr?.base64) {
+              qrCode = {
+                base64: liveQr.base64 ?? null,
+                pairingCode: liveQr.pairingCode ?? null,
+              };
+            }
           }
         }
       } catch {

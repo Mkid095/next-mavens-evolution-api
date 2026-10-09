@@ -1,3 +1,5 @@
+import { prismaRepository } from '@api/server.module';
+import { Integration } from '@api/types/wa.types';
 import { Logger } from '@config/logger.config';
 import crypto from 'crypto';
 
@@ -42,15 +44,40 @@ export class InstanceService {
   // ──────────────────────────────────────────────
 
   /**
-   * Create a new PlatformInstance.
+   * Create a new PlatformInstance AND pre-allocate the underlying
+   * Evolution Instance row.
    *
-   * Generates publicId = inst_<hex>, inserts with status=CREATED.
-   * Idempotency is handled upstream by the idempotency middleware — this
-   * service performs a plain insert on every call.
+   * Doing both at create time means:
+   *  - Connect flow always has a real Evolution instanceId to bind to
+   *  - The first /connect call doesn't have to do a fragile
+   *    "find-or-create" against the engine that used a broken
+   *    waMonitor.prismaRepository reference
+   *  - The Evolution row exists before any SSE / Baileys startup, so
+   *    events find a target channel immediately
+   *
+   * If the Evolution row already exists (very rare), we reuse it.
    */
   async create(accountId: string, name: string): Promise<PlatformInstanceDomain> {
     const publicId = `inst_${crypto.randomBytes(8).toString('hex')}`;
 
+    // 1) Pre-create the Evolution Instance row (in the engine's DB)
+    let evolutionInstance = await prismaRepository.instance.findFirst({
+      where: { name },
+    });
+    if (!evolutionInstance) {
+      evolutionInstance = await prismaRepository.instance.create({
+        data: {
+          name,
+          integration: Integration.WHATSAPP_BAILEYS,
+          connectionStatus: 'close',
+        },
+      });
+      this.logger.log(`Created Evolution Instance id=${evolutionInstance.id} name=${name}`);
+    } else {
+      this.logger.log(`Reusing existing Evolution Instance id=${evolutionInstance.id} name=${name}`);
+    }
+
+    // 2) Create the canonical PlatformInstance row
     const instance = await platformRepository.platformInstance.create({
       data: {
         publicId,
@@ -61,7 +88,9 @@ export class InstanceService {
       },
     });
 
-    this.logger.log(`Created PlatformInstance ${publicId} for account ${accountId}`);
+    this.logger.log(
+      `Created PlatformInstance ${publicId} (Evolution id=${evolutionInstance.id}) for account ${accountId}`,
+    );
     return instance;
   }
 

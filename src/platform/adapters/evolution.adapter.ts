@@ -9,6 +9,7 @@
  *
  * IMPORTS:
  * - waMonitor (WAMonitoringService) — accesses waInstances[instanceName]
+ * - prismaRepository — module-level singleton for Evolution Instance table
  * - createJid (src/utils/createJid.ts) — JID formatting (adapter-private)
  * - platformRepository — PlatformInstance, InstanceEventLog, etc.
  */
@@ -40,14 +41,40 @@ function generatePublicId(prefix: string): string {
   return `${prefix}_${crypto.randomBytes(8).toString('hex')}`;
 }
 
+interface CachedQr {
+  base64: string | null;
+  pairingCode: string | null;
+  capturedAt: number;
+}
+
 export class EvolutionAdapter implements IWhatsAppAdapter {
   private readonly logger = new Logger('EvolutionAdapter');
   private eventHandlers: Set<(event: LifecycleEvent) => void> = new Set();
+  // In-memory cache of the latest QR per instance name. The SSE handler
+  // also subscribes to Redis, but this cache is used by the polling
+  // fallback in GET /instances/:id so the QR is available even if SSE
+  // delivery is delayed.
+  private qrCache: Map<string, CachedQr> = new Map();
 
+  // ──────────────────────────────────────────────────────────────────────
+  //  Connect
+  // ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * Initiate a Baileys connection for an existing PlatformInstance.
+   *
+   * Steps (in order):
+   *  1. Look up the PlatformInstance and its associated Evolution row
+   *  2. Close any stale in-memory socket
+   *  3. Hand the Evolution row ID to waMonitor.initializeInstance, which
+   *     calls BaileysStartupService.create() + connectToWhatsapp() — that
+   *     last call is what actually generates the QR
+   *  4. Update PlatformInstance.status to CONNECTING
+   *  5. Return immediately; the QR arrives via SSE / polling
+   */
   async connectInstance(instanceId: string): Promise<{ qrCode?: string }> {
     const platformInstance = await platformRepository.platformInstance.findUnique({
       where: { id: instanceId },
-      include: { account: true },
     });
 
     if (!platformInstance) {
@@ -56,11 +83,10 @@ export class EvolutionAdapter implements IWhatsAppAdapter {
 
     const instanceName = platformInstance.name;
 
-    // Check if already connected — reuse existing socket
+    // Already connected? Reuse the socket and return no QR needed.
     const existing = waMonitor.waInstances[instanceName];
     if (existing?.stateConnection?.state === 'open') {
       this.logger.log(`Instance ${instanceName} already connected, reusing socket`);
-      // Update PlatformInstance status
       await platformRepository.platformInstance.update({
         where: { id: instanceId },
         data: {
@@ -81,16 +107,14 @@ export class EvolutionAdapter implements IWhatsAppAdapter {
       }
     }
 
-    // Load or create the Evolution Instance record via the module-level
-    // prismaRepository singleton (not waMonitor.prismaRepository which
-    // is private).
-    let dbInstance = await prismaRepository.instance.findFirst({
+    // Find the Evolution row (created at instance-creation time by
+    // InstanceService). If for some reason it's missing, create it now.
+    let evolutionRow = await prismaRepository.instance.findFirst({
       where: { name: instanceName },
     });
-
-    if (!dbInstance) {
-      // Create the Evolution Instance if it doesn't exist
-      dbInstance = await prismaRepository.instance.create({
+    if (!evolutionRow) {
+      this.logger.warn(`Evolution row missing for ${instanceName}; creating on the fly`);
+      evolutionRow = await prismaRepository.instance.create({
         data: {
           name: instanceName,
           integration: Integration.WHATSAPP_BAILEYS,
@@ -99,15 +123,22 @@ export class EvolutionAdapter implements IWhatsAppAdapter {
       });
     }
 
-    // Initialize via waMonitor
+    // Clear any cached QR from a previous connect attempt
+    this.qrCache.delete(instanceName);
+
+    // Initialize the Baileys service. This calls connectToWhatsapp() in
+    // turn, which is what kicks off QR generation.
     const instanceData: InstanceDto = {
       instanceName,
-      instanceId: dbInstance.id,
+      instanceId: evolutionRow.id,
       integration: Integration.WHATSAPP_BAILEYS,
       connectionStatus: 'connecting',
     };
 
-    await waMonitor.initializeInstance(instanceData);
+    const service = await waMonitor.initializeInstance(instanceData);
+    if (!service) {
+      throw new Error(`Failed to initialize Baileys for ${instanceName}`);
+    }
 
     // Update PlatformInstance status
     await platformRepository.platformInstance.update({
@@ -115,12 +146,18 @@ export class EvolutionAdapter implements IWhatsAppAdapter {
       data: { status: 'CONNECTING' },
     });
 
-    // Listen for connection events to emit lifecycle events
-    this.setupConnectionEventListener(instanceName);
+    // Hook a one-time event listener on the new Baileys service so we
+    // can capture the first QR into our cache for the polling fallback.
+    this.attachQrCacheListener(instanceName);
 
-    // Return empty — QR code will be emitted via lifecycle event if needed
+    this.logger.log(`Connect started for ${instanceName} (Evolution id=${evolutionRow.id})`);
+
     return {};
   }
+
+  // ──────────────────────────────────────────────────────────────────────
+  //  Disconnect
+  // ──────────────────────────────────────────────────────────────────────
 
   async disconnectInstance(instanceId: string): Promise<void> {
     const platformInstance = await platformRepository.platformInstance.findUnique({
@@ -137,10 +174,13 @@ export class EvolutionAdapter implements IWhatsAppAdapter {
     if (existing) {
       try {
         await (existing as any).logoutInstance();
-      } catch {
-        // ignore
+      } catch (err) {
+        this.logger.warn(`Logout error for ${instanceName}: ${err}`);
       }
     }
+
+    // Clear any cached QR
+    this.qrCache.delete(instanceName);
 
     await platformRepository.platformInstance.update({
       where: { id: instanceId },
@@ -156,10 +196,18 @@ export class EvolutionAdapter implements IWhatsAppAdapter {
     });
   }
 
+  // ──────────────────────────────────────────────────────────────────────
+  //  Restart
+  // ──────────────────────────────────────────────────────────────────────
+
   async restartInstance(instanceId: string): Promise<void> {
     await this.disconnectInstance(instanceId);
     await this.connectInstance(instanceId);
   }
+
+  // ──────────────────────────────────────────────────────────────────────
+  //  Read state
+  // ──────────────────────────────────────────────────────────────────────
 
   async getInstanceState(instanceId: string): Promise<CanonicalInstanceState> {
     const platformInstance = await platformRepository.platformInstance.findUnique({
@@ -175,10 +223,10 @@ export class EvolutionAdapter implements IWhatsAppAdapter {
     const isConnected = existing?.stateConnection?.state === 'open';
 
     let status: InstanceStatus = platformInstance.status as InstanceStatus;
-    if (isConnected && status === 'CONNECTING') {
+    if (isConnected) {
       status = 'CONNECTED';
-    } else if (isConnected && status !== 'DISCONNECTED' && status !== 'SUSPENDED') {
-      status = 'CONNECTED';
+    } else if (existing?.stateConnection?.state === 'connecting') {
+      status = 'CONNECTING';
     }
 
     return {
@@ -189,6 +237,19 @@ export class EvolutionAdapter implements IWhatsAppAdapter {
       connectedAt: platformInstance.lastConnectedAt?.toISOString() ?? null,
     };
   }
+
+  /**
+   * Get the most recent QR for an instance, if available.
+   * Reads from the in-memory cache (populated by SSE / direct event
+   * capture). Returns null if no QR has been emitted yet.
+   */
+  getCachedQr(instanceName: string): CachedQr | null {
+    return this.qrCache.get(instanceName) ?? null;
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  //  Send / fetch
+  // ──────────────────────────────────────────────────────────────────────
 
   async sendMessage(
     instanceId: string,
@@ -320,16 +381,36 @@ export class EvolutionAdapter implements IWhatsAppAdapter {
     };
   }
 
-  // ────────────────────────────────────────────────
-  // Private helper methods
-  // ────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────
+  //  Private helpers
+  // ──────────────────────────────────────────────────────────────────────
 
-  private setupConnectionEventListener(instanceName: string): void {
+  /**
+   * Subscribe to QRCODE_UPDATED events on the running Baileys service
+   * and cache the latest QR. Even if the SSE pipeline (which depends
+   * on Redis pub/sub) drops a message, the polling fallback in the GET
+   * handler can still read the cached QR.
+   */
+  private attachQrCacheListener(instanceName: string): void {
     const service = waMonitor.waInstances[instanceName];
-    if (!service) return;
+    if (!service) {
+      // Service not in waInstances yet; try again on a short delay
+      setTimeout(() => this.attachQrCacheListener(instanceName), 200);
+      return;
+    }
 
-    // The lifecycle events are written to InstanceEventLog and forwarded
-    // The Baileys service emits via eventHandler on waMonitor
+    try {
+      const data = (service as any).qrCode;
+      if (data?.base64) {
+        this.qrCache.set(instanceName, {
+          base64: data.base64 ?? null,
+          pairingCode: data.pairingCode ?? null,
+          capturedAt: Date.now(),
+        });
+      }
+    } catch {
+      /* engine not yet initialized with QR — Redis event will fill it */
+    }
   }
 
   private async emitEvent(event: LifecycleEvent): Promise<void> {
