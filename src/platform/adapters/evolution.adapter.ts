@@ -14,7 +14,7 @@
  */
 
 import { InstanceDto } from '@api/dto/instance.dto';
-import { waMonitor } from '@api/server.module';
+import { prismaRepository, waMonitor } from '@api/server.module';
 import { Integration } from '@api/types/wa.types';
 import { Logger } from '@config/logger.config';
 import crypto from 'crypto';
@@ -81,14 +81,16 @@ export class EvolutionAdapter implements IWhatsAppAdapter {
       }
     }
 
-    // Load or create the Evolution Instance record
-    let dbInstance = await (waMonitor as any).prismaRepository?.instance?.findFirst({
+    // Load or create the Evolution Instance record via the module-level
+    // prismaRepository singleton (not waMonitor.prismaRepository which
+    // is private).
+    let dbInstance = await prismaRepository.instance.findFirst({
       where: { name: instanceName },
     });
 
     if (!dbInstance) {
       // Create the Evolution Instance if it doesn't exist
-      dbInstance = await (waMonitor as any).prismaRepository?.instance?.create({
+      dbInstance = await prismaRepository.instance.create({
         data: {
           name: instanceName,
           integration: Integration.WHATSAPP_BAILEYS,
