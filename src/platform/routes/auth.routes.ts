@@ -167,6 +167,45 @@ router.get('/me', sessionAuthMiddleware(getSessionService()), async (req: Reques
 });
 
 /**
+ * PATCH /platform/auth/account
+ * Update the authenticated user's account (workspace name).
+ * Body: { name: string }
+ */
+router.patch('/account', sessionAuthMiddleware(getSessionService()), async (req: Request, res: Response) => {
+  const platformSession = (req as Request & { platformSession?: PlatformSession }).platformSession;
+  if (!platformSession) {
+    res.status(401).json({ error: 'UNAUTHORIZED' });
+    return;
+  }
+
+  const { name } = req.body ?? {};
+  if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 80) {
+    res.status(400).json({ error: 'INVALID_NAME', message: 'Name must be 2–80 characters' });
+    return;
+  }
+
+  try {
+    const updated = await platformRepository.platformAccount.update({
+      where: { id: platformSession.accountId },
+      data: { name: name.trim() },
+      select: { name: true },
+    });
+
+    // Also update the user's display name to keep the dashboard's
+    // header in sync (the user's name is what's shown in the topbar).
+    const user = await platformRepository.platformUser.update({
+      where: { id: platformSession.userId },
+      data: { name: name.trim() },
+      select: { email: true, name: true },
+    });
+
+    res.json({ name: updated.name, email: user.email });
+  } catch (err) {
+    res.status(500).json({ error: 'UPDATE_ERROR', message: (err as Error).message });
+  }
+});
+
+/**
  * POST /platform/refresh-session
  * Extends the session TTL.
  */

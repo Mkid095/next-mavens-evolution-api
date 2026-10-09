@@ -86,15 +86,22 @@ export class PlatformAuthService {
     return { plaintextKey };
   }
 
-  public async revokeApiKey(id: string): Promise<boolean> {
-    const result = await platformRepository.platformApiKey.update({
-      where: { id },
+  public async revokeApiKey(publicId: string, accountId?: string): Promise<boolean> {
+    // publicId is the key_xxx id; the platformApiKey.id is the internal CUID.
+    // We look up by publicId to keep the URL stable.
+    const existing = await platformRepository.platformApiKey.findFirst({
+      where: { publicId, ...(accountId ? { accountId } : {}) },
+      select: { id: true, revokedAt: true },
+    });
+    if (!existing || existing.revokedAt) {
+      return false;
+    }
+    await platformRepository.platformApiKey.update({
+      where: { id: existing.id },
       data: { revokedAt: new Date() },
     });
-    if (result) {
-      this.logger.info(`API key revoked: ${id}`);
-    }
-    return !!result;
+    this.logger.info(`API key revoked: ${publicId} (accountId=${accountId ?? 'n/a'})`);
+    return true;
   }
 
   /**
@@ -118,7 +125,9 @@ export class PlatformAuthService {
         createdAt: true,
         expiresAt: true,
         revokedAt: true,
+        lastUsedAt: true,
       },
+      orderBy: { createdAt: 'desc' },
     });
     return keys;
   }

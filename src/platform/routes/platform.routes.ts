@@ -229,6 +229,7 @@ router.get('/:accountId/api-keys', platformAuthMiddleware.authenticate, tenantRe
       createdAt: k.createdAt,
       expiresAt: k.expiresAt,
       revokedAt: k.revokedAt,
+      lastUsedAt: k.lastUsedAt,
     })));
   } catch (error) {
     res.status(500).json({ error: 'FETCH_ERROR' });
@@ -257,6 +258,30 @@ router.post('/:accountId/api-keys', platformAuthMiddleware.authenticate, tenantR
     res.status(201).json({ id: publicId, name, scopes, apiKey: plaintextKey });
   } catch (error) {
     res.status(500).json({ error: 'CREATE_ERROR' });
+  }
+});
+
+/**
+ * Revoke an API key (sets revokedAt to now).
+ * DELETE /accounts/:accountId/api-keys/:keyId
+ * keyId is the public ID (key_xxx).
+ */
+router.delete('/:accountId/api-keys/:keyId', platformAuthMiddleware.authenticate, tenantResolveMiddleware.resolve, async (req: Request, res: Response) => {
+  try {
+    const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
+    if (!platformTenant) { res.status(401).json({ error: 'UNAUTHORIZED' }); return; }
+    if (platformTenant.publicId !== req.params.accountId) {
+      res.status(403).json({ error: 'FORBIDDEN' });
+      return;
+    }
+    const ok = await authService.revokeApiKey(req.params.keyId, platformTenant.accountId);
+    if (!ok) {
+      res.status(404).json({ error: 'NOT_FOUND' });
+      return;
+    }
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'REVOKE_ERROR' });
   }
 });
 
