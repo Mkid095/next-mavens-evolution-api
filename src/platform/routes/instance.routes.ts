@@ -21,6 +21,35 @@ const router: Router = Router();
 const auditService = new AuditService();
 
 /**
+ * Canonical Instance DTO used by LIST, CREATE, and GET responses.
+ * Keeps the publicId stable across all endpoints so the dashboard can
+ * always navigate to /dashboard/instances/{id} without a name swap.
+ */
+function toInstanceDTO(row: {
+  id: string;
+  publicId: string;
+  name: string;
+  status: string;
+  phoneNumber: string | null;
+  capabilities: unknown;
+  lastConnectedAt: Date | null;
+  createdAt: Date;
+}) {
+  return {
+    id: row.publicId,        // external-facing id is the publicId
+    internalId: row.id,      // engine CUID, used by internal routes
+    publicId: row.publicId,  // explicit for clarity in the dashboard
+    name: row.name,
+    status: row.status,
+    phoneNumber: row.phoneNumber,
+    capabilities: row.capabilities ?? [],
+    lastConnectedAt: row.lastConnectedAt,
+    connectedAt: row.lastConnectedAt, // alias for backward compatibility
+    createdAt: row.createdAt,
+  };
+}
+
+/**
  * List instances for the authenticated tenant.
  * GET /accounts/:accountId/instances
  * accountId in URL must match the authenticated tenant's publicId.
@@ -53,9 +82,10 @@ router.get(
           lastConnectedAt: true,
           createdAt: true,
         },
+        orderBy: { createdAt: 'desc' },
       });
 
-      res.json(instances);
+      res.json(instances.map(toInstanceDTO));
     } catch {
       res.status(500).json({ error: 'FETCH_ERROR' });
     }
@@ -104,12 +134,7 @@ router.post(
       });
 
       if (existing) {
-        const responseBody = {
-          id: existing.publicId,
-          name: existing.name,
-          status: existing.status,
-          createdAt: existing.createdAt,
-        };
+        const responseBody = toInstanceDTO(existing);
         await idempotencyMiddleware.complete(req, res, responseBody, existing.publicId);
         res.status(200).json(responseBody);
         return;
@@ -128,12 +153,7 @@ router.post(
         id: instance.publicId,
       });
 
-      const responseBody = {
-        id: instance.publicId,
-        name: instance.name,
-        status: instance.status,
-        createdAt: instance.createdAt,
-      };
+      const responseBody = toInstanceDTO(instance);
 
       await idempotencyMiddleware.complete(req, res, responseBody, instance.publicId);
 
@@ -207,15 +227,7 @@ router.get(
       }
 
       res.json({
-        id: instance.publicId,
-        internalId: instance.id, // engine CUID, used by /messages/send
-        publicId: instance.publicId,
-        name: instance.name,
-        status: instance.status,
-        phoneNumber: instance.phoneNumber,
-        capabilities: instance.capabilities,
-        lastConnectedAt: instance.lastConnectedAt,
-        createdAt: instance.createdAt,
+        ...toInstanceDTO(instance),
         ...(qrCode ? { qrCode } : {}),
       });
     } catch {
