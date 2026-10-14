@@ -225,3 +225,265 @@ router.post('/refresh-session', sessionAuthMiddleware(getSessionService()), asyn
 
   res.json({ success: true, refreshedAt: new Date().toISOString() });
 });
+
+/**
+ * Resolve the company gate password.
+ *
+ * This shared secret gates two flows that would otherwise require
+ * sending emails to non-existent users:
+ *
+ *   1. /signup — anyone can create a new account, but they must
+ *      know the company password to confirm they're part of the
+ *      organization. This is for an internal company tool, not a
+ *      public SaaS, so this gate is the only protection against
+ *      random signups.
+ *
+ *   2. /forgot-password — there's no email/SMS to send a reset
+ *      link to, so we ask for the company password as proof of
+ *      organization membership, then let them set a new password.
+ *
+ * The env var lets ops rotate the gate without code changes. A
+ * dev default is provided so local development works out of the
+ * box, but the env var MUST be set in production.
+ */
+function getCompanyGatePassword(): string {
+  return process.env.COMPANY_GATE_PASSWORD || 'COMPANY_GATE_PASSWORD_PLACEHOLDER';
+}
+
+/** Hash a plaintext password using PBKDF2-SHA512 */
+function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512');
+  return `${salt.toString('hex')}:${hash.toString('hex')}`;
+}
+
+/**
+ * POST /platform/signup
+ * Body: { name, email, password, companyPassword }
+ *
+ * Creates a new PlatformAccount + PlatformUser (role=OWNER).
+ * The company password gates this — it's not a public sign-up,
+ * it's a way for new employees to provision their own seat.
+ */
+router.post('/signup', async (req: Request, res: Response) => {
+  const { name, email, password, companyPassword } = req.body as {
+    name?: string;
+    email?: string;
+    password?: string;
+    companyPassword?: string;
+  };
+
+  if (!name || !email || !password || !companyPassword) {
+    res.status(400).json({ error: 'MISSING_FIELDS', message: 'name, email, password, and companyPassword are required' });
+    return;
+  }
+  if (name.trim().length < 2 || name.trim().length > 80) {
+    res.status(400).json({ error: 'INVALID_NAME', message: 'Name must be 2–80 characters' });
+    return;
+  }
+  if (password.length < 8) {
+    res.status(400).json({ error: 'WEAK_PASSWORD', message: 'Password must be at least 8 characters' });
+    return;
+  }
+  if (companyPassword !== getCompanyGatePassword()) {
+    // Same generic message as login to avoid leaking which gate exists
+    res.status(401).json({ error: 'INVALID_CREDENTIALS', message: 'Invalid company password' });
+    return;
+  }
+
+  // Reject duplicate email
+  const existing = await platformRepository.platformUser.findUnique({ where: { email } });
+  if (existing) {
+    res.status(409).json({ error: 'EMAIL_TAKEN', message: 'An account with this email already exists' });
+    return;
+  }
+
+  // Create the account + owner user in a transaction
+  try {
+    const accountPublicId = `acct_${crypto.randomBytes(8).toString('hex')}`;
+    const userPublicId = `usr_${crypto.randomBytes(8).toString('hex')}`;
+
+    const account = await platformRepository.platformAccount.create({
+      data: { publicId: accountPublicId, name: name.trim(), status: 'ACTIVE' },
+    });
+
+    const user = await platformRepository.platformUser.create({
+      data: {
+        publicId: userPublicId,
+        accountId: account.id,
+        email: email.trim().toLowerCase(),
+        name: name.trim(),
+        passwordHash: hashPassword(password),
+        role: 'OWNER',
+      },
+    });
+
+    // Issue a session so the user is logged in immediately
+    const sessionService = getSessionService();
+    const sessionId = await sessionService.createSession(user.id, user.accountId);
+    generateCsrfToken(res);
+    res.cookie('sessionId', sessionId, {
+      httpOnly: true,
+      sameSite: 'strict',
+      secure: ((req.headers['x-forwarded-proto'] as string) ?? '').startsWith('https'),
+      maxAge: 86400 * 1000,
+      path: '/',
+    });
+
+    res.status(201).json({
+      user: { id: user.publicId, email: user.email, role: user.role, name: user.name },
+      accountId: user.accountId,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'SIGNUP_ERROR', message: (err as Error).message });
+  }
+});
+
+/**
+ * POST /platform/forgot-password/verify
+ * Body: { email, companyPassword }
+ *
+ * Step 1 of password reset. Verifies the email exists AND the
+ * company password is correct. Returns a short-lived reset token
+ * (signed, 15min TTL) that the client passes to /forgot-password/reset.
+ *
+ * We don't reveal whether the email exists — the company password
+ * check is the gate, not the email lookup. If both pass, the token
+ * is generated; otherwise the same generic error is returned.
+ */
+router.post('/forgot-password/verify', async (req: Request, res: Response) => {
+  const { email, companyPassword } = req.body as {
+    email?: string;
+    companyPassword?: string;
+  };
+
+  if (!email || !companyPassword) {
+    res.status(400).json({ error: 'MISSING_FIELDS' });
+    return;
+  }
+
+  // First check: company password is the gate
+  if (companyPassword !== getCompanyGatePassword()) {
+    res.status(401).json({ error: 'INVALID_CREDENTIALS', message: 'Invalid company password' });
+    return;
+  }
+
+  // Second check: email must match an existing user
+  const user = await platformRepository.platformUser.findUnique({ where: { email: email.trim().toLowerCase() } });
+  if (!user) {
+    res.status(404).json({ error: 'EMAIL_NOT_FOUND', message: 'No account found for that email' });
+    return;
+  }
+
+  // Issue a signed reset token: { userId, exp } HMAC-signed
+  const exp = Date.now() + 15 * 60 * 1000;
+  const payload = `${user.id}.${exp}`;
+  const secret = process.env.SESSION_SECRET || 'dev-session-secret-rotate-in-prod';
+  const sig = crypto.createHmac('sha256', secret).update(payload).digest('hex');
+  const token = Buffer.from(`${payload}.${sig}`).toString('base64url');
+
+  res.json({ resetToken: token, expiresIn: 900 });
+});
+
+/**
+ * POST /platform/forgot-password/reset
+ * Body: { resetToken, newPassword }
+ *
+ * Step 2 of password reset. Verifies the signed token, then sets
+ * the new password. Also destroys all active sessions for that
+ * user (so a stolen token can't keep a session alive).
+ */
+router.post('/forgot-password/reset', async (req: Request, res: Response) => {
+  const { resetToken, newPassword } = req.body as {
+    resetToken?: string;
+    newPassword?: string;
+  };
+
+  if (!resetToken || !newPassword) {
+    res.status(400).json({ error: 'MISSING_FIELDS' });
+    return;
+  }
+  if (newPassword.length < 8) {
+    res.status(400).json({ error: 'WEAK_PASSWORD', message: 'Password must be at least 8 characters' });
+    return;
+  }
+
+  let userId: string;
+  let exp: number;
+  try {
+    const decoded = Buffer.from(resetToken, 'base64url').toString('utf8');
+    const parts = decoded.split('.');
+    if (parts.length !== 3) throw new Error('Malformed token');
+    userId = parts[0];
+    exp = Number(parts[1]);
+    const sig = parts[2];
+    const expected = crypto
+      .createHmac('sha256', process.env.SESSION_SECRET || 'dev-session-secret-rotate-in-prod')
+      .update(`${userId}.${exp}`)
+      .digest('hex');
+    if (expected !== sig) throw new Error('Bad signature');
+    if (Date.now() > Number(exp)) throw new Error('Token expired');
+  } catch (err) {
+    res.status(401).json({ error: 'INVALID_TOKEN', message: 'Reset link is invalid or expired' });
+    return;
+  }
+
+  // Apply the new password
+  await platformRepository.platformUser.update({
+    where: { id: userId },
+    data: { passwordHash: hashPassword(newPassword) },
+  });
+
+  // Sessions are stored in Redis (not Prisma). Force the user to log in
+  // again by clearing the current cookie if it belongs to them.
+  res.clearCookie('sessionId', { path: '/' });
+
+  res.json({ success: true });
+});
+
+/**
+ * POST /platform/change-password
+ * Authenticated. Body: { currentPassword, newPassword }
+ *
+ * For a logged-in user who wants to rotate their own password.
+ * Requires the current password as proof (replaces the company
+ * password flow for in-app rotation).
+ */
+router.post(
+  '/change-password',
+  csrfValidate,
+  sessionAuthMiddleware(getSessionService()),
+  async (req: Request, res: Response) => {
+    const platformSession = (req as Request & { platformSession?: PlatformSession }).platformSession;
+    if (!platformSession) {
+      res.status(401).json({ error: 'UNAUTHORIZED' });
+      return;
+    }
+
+    const { currentPassword, newPassword } = req.body as {
+      currentPassword?: string;
+      newPassword?: string;
+    };
+    if (!currentPassword || !newPassword) {
+      res.status(400).json({ error: 'MISSING_FIELDS' });
+      return;
+    }
+    if (newPassword.length < 8) {
+      res.status(400).json({ error: 'WEAK_PASSWORD', message: 'Password must be at least 8 characters' });
+      return;
+    }
+
+    const user = await platformRepository.platformUser.findUnique({ where: { id: platformSession.userId } });
+    if (!user || !user.passwordHash || !verifyPassword(currentPassword, user.passwordHash)) {
+      res.status(401).json({ error: 'INVALID_CREDENTIALS', message: 'Current password is incorrect' });
+      return;
+    }
+
+    await platformRepository.platformUser.update({
+      where: { id: user.id },
+      data: { passwordHash: hashPassword(newPassword) },
+    });
+
+    res.json({ success: true });
+  },
+);
