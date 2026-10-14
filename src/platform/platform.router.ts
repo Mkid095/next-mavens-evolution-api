@@ -15,6 +15,7 @@ import { messagePublicRoutes } from './routes/message-public.routes';
 import { instanceRoutes } from './routes/instance.routes';
 import { contactRoutes } from './routes/contact.routes';
 import { groupRoutes } from './routes/group.routes';
+import { projectRoutes } from './routes/project.routes';
 import { authRouter, setSessionService, getSessionService } from './routes/auth.routes';
 import { createSseRouter } from './routes/sse.routes';
 import { mcpRouter } from './routes/mcp.routes';
@@ -143,6 +144,7 @@ router.use('/accounts', hybridChain, instanceRoutes);
  * Mount account/user routes (API-key auth only).
  */
 router.use('/accounts', middlewareChain, platformRoutes);
+router.use('/accounts', middlewareChain, projectRoutes);
 router.use('/accounts', middlewareChain, contactRoutes);
 router.use('/accounts', middlewareChain, groupRoutes);
 

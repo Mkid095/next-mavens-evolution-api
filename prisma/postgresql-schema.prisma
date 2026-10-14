@@ -5,8 +5,8 @@
 // Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
 
 generator client {
-  provider     = "prisma-client-js"
-  engineType   = "binary"
+  provider   = "prisma-client-js"
+  engineType = "binary"
 }
 
 datasource db {
@@ -114,11 +114,11 @@ model Instance {
   EvoaiSetting            EvoaiSetting?
 
   // Phase 1: Platform fields (nullable — no existing data affected)
-  platformAccountId   String?  @db.VarChar(255)
-  platformPhoneNumber String?  @db.VarChar(20)
-  platformStatus     String?  @db.VarChar(50)
+  platformAccountId   String? @db.VarChar(255)
+  platformPhoneNumber String? @db.VarChar(20)
+  platformStatus      String? @db.VarChar(50)
 
-  platformAccount   PlatformAccount?  @relation(fields: [platformAccountId], references: [id])
+  platformAccount         PlatformAccount?         @relation(fields: [platformAccountId], references: [id])
   platformApiKeyInstances PlatformApiKeyInstance[]
 }
 
@@ -777,7 +777,7 @@ model EvoaiSetting {
 
 model PlatformAccount {
   id        String   @id @default(cuid())
-  publicId String   @unique @db.VarChar(50)
+  publicId  String   @unique @db.VarChar(50)
   name      String   @db.VarChar(255)
   status    String   @default("ACTIVE")
   createdAt DateTime @default(now()) @db.Timestamp
@@ -786,26 +786,31 @@ model PlatformAccount {
   users              PlatformUser[]
   apiKeys            PlatformApiKey[]
   subscriptions      PlatformSubscription[]
-  rateLimitPolicies PlatformRateLimitPolicy[]
-  auditLogs         PlatformAuditLog[]
-  usageRecords      PlatformUsageRecord[]
+  rateLimitPolicies  PlatformRateLimitPolicy[]
+  auditLogs          PlatformAuditLog[]
+  usageRecords       PlatformUsageRecord[]
   idempotencyRecords PlatformIdempotencyRecord[]
-  webhooks          PlatformWebhook[]
-  instances         Instance[]
+  webhooks           PlatformWebhook[]
+  instances          Instance[]
+  platformInstances  PlatformInstance[]
+  contacts           PlatformContact[]
+  groups             PlatformGroup[]
+  projects           PlatformProject[]
+  apps               PlatformApp[]
 
   @@index([status])
 }
 
 model PlatformUser {
-  id           String   @id @default(cuid())
-  publicId     String   @unique @db.VarChar(50)
+  id           String    @id @default(cuid())
+  publicId     String    @unique @db.VarChar(50)
   accountId    String
-  email        String   @unique @db.VarChar(255)
-  passwordHash String?  @db.VarChar(255)
-  role         String   @default("MEMBER")
-  createdAt    DateTime @default(now()) @db.Timestamp
+  email        String    @unique @db.VarChar(255)
+  passwordHash String?   @db.VarChar(255)
+  role         String    @default("MEMBER")
+  createdAt    DateTime  @default(now()) @db.Timestamp
   lastLoginAt  DateTime?
-  name         String?  @db.VarChar(255)
+  name         String?   @db.VarChar(255)
 
   account PlatformAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
@@ -813,30 +818,30 @@ model PlatformUser {
 }
 
 model PlatformRateLimitPolicy {
-  id                           String @id @default(cuid())
-  publicId                     String @unique @db.VarChar(50)
-  requestsPerMinute            Int    @default(100)
-  messagesPerMinute            Int    @default(60)
-  burstLimit                   Int    @default(45)
-  webhookDeliveriesPerMinute    Int    @default(500)
-  maxInstances                 Int    @default(1)
-  maxActiveInstances          Int?
-  createdAt DateTime @default(now()) @db.Timestamp
+  id                         String   @id @default(cuid())
+  publicId                   String   @unique @db.VarChar(50)
+  requestsPerMinute          Int      @default(100)
+  messagesPerMinute          Int      @default(60)
+  burstLimit                 Int      @default(45)
+  webhookDeliveriesPerMinute Int      @default(500)
+  maxInstances               Int      @default(1)
+  maxActiveInstances         Int?
+  createdAt                  DateTime @default(now()) @db.Timestamp
 
-  platformPlans PlatformPlan[]
+  platformPlans    PlatformPlan[]
   platformAccounts PlatformAccount[]
 
   @@map("PlatformRateLimitPolicy")
 }
 
 model PlatformPlan {
-  id                  String  @id @default(cuid())
-  publicId            String  @unique @db.VarChar(50)
-  name                String  @unique @db.VarChar(100)
-  displayName         String  @db.VarChar(100)
+  id                  String   @id @default(cuid())
+  publicId            String   @unique @db.VarChar(50)
+  name                String   @unique @db.VarChar(100)
+  displayName         String   @db.VarChar(100)
   monthlyMessageLimit Int?
   rateLimitPolicyId   String
-  createdAt DateTime @default(now()) @db.Timestamp
+  createdAt           DateTime @default(now()) @db.Timestamp
 
   rateLimitPolicy PlatformRateLimitPolicy @relation(fields: [rateLimitPolicyId], references: [id])
   subscriptions   PlatformSubscription[]
@@ -845,13 +850,13 @@ model PlatformPlan {
 }
 
 model PlatformSubscription {
-  id             String    @id @default(cuid())
-  publicId       String    @unique @db.VarChar(50)
-  accountId      String
-  planId         String
-  status         String    @default("active")
-  startedAt      DateTime  @default(now()) @db.Timestamp
-  endsAt         DateTime?
+  id        String    @id @default(cuid())
+  publicId  String    @unique @db.VarChar(50)
+  accountId String
+  planId    String
+  status    String    @default("active")
+  startedAt DateTime  @default(now()) @db.Timestamp
+  endsAt    DateTime?
 
   account PlatformAccount @relation(fields: [accountId], references: [id])
   plan    PlatformPlan    @relation(fields: [planId], references: [id])
@@ -861,27 +866,30 @@ model PlatformSubscription {
 }
 
 model PlatformApiKey {
-  id            String    @id @default(cuid())
-  publicId      String    @unique @db.VarChar(50)
-  accountId     String
-  keyHash       String    @unique @db.VarChar(64)
-  keyPrefix     String    @db.VarChar(16)
-  name          String?   @db.VarChar(255)
-  scopes        Json      @default("[]")
-  expiresAt     DateTime?
-  revokedAt     DateTime?
-  lastUsedAt    DateTime?
-  createdAt     DateTime  @default(now()) @db.Timestamp
+  id         String    @id @default(cuid())
+  publicId   String    @unique @db.VarChar(50)
+  accountId  String
+  appId      String?
+  keyHash    String    @unique @db.VarChar(64)
+  keyPrefix  String    @db.VarChar(16)
+  name       String?   @db.VarChar(255)
+  scopes     Json      @default("[]")
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now()) @db.Timestamp
 
-  account  PlatformAccount     @relation(fields: [accountId], references: [id])
+  account   PlatformAccount          @relation(fields: [accountId], references: [id])
+  app       PlatformApp?             @relation(fields: [appId], references: [id])
   instances PlatformApiKeyInstance[]
 
   @@index([accountId])
+  @@index([appId])
   @@index([keyHash])
 }
 
 model PlatformApiKeyInstance {
-  id         String  @id @default(cuid())
+  id         String @id @default(cuid())
   apiKeyId   String
   instanceId String
 
@@ -893,8 +901,8 @@ model PlatformApiKeyInstance {
 }
 
 model PlatformIdempotencyRecord {
-  id              String    @id @default(cuid())
-  accountId       String
+  id             String   @id @default(cuid())
+  accountId      String
   apiKeyId       String
   idempotencyKey String   @db.VarChar(128)
   requestHash    String   @db.VarChar(64)
@@ -905,7 +913,7 @@ model PlatformIdempotencyRecord {
   resourceId     String?  @db.VarChar(50)
   errorCode      String?
   createdAt      DateTime @default(now()) @db.Timestamp
-  expiresAt     DateTime
+  expiresAt      DateTime
 
   account PlatformAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
@@ -914,108 +922,278 @@ model PlatformIdempotencyRecord {
 }
 
 model PlatformMessageCommand {
-  id              String    @id @default(cuid())
-  idempotencyKey String   @db.VarChar(128)
+  id             String       @id @default(cuid())
+  idempotencyKey String       @db.VarChar(128)
   accountId      String
+  appId          String?
   instanceId     String
   apiKeyId       String
-  messageId      String   @db.VarChar(50)
-  type           String   @db.VarChar(50)
-  recipient      String   @db.VarChar(20)
+  messageId      String       @db.VarChar(50)
+  type           String       @db.VarChar(50)
+  recipient      String       @db.VarChar(20)
   content        Json
-  status         String   @default("queued")
-  attempts       Int      @default(0)
-  lastError      String?  @db.Text
+  status         String       @default("queued")
+  attempts       Int          @default(0)
+  lastError      String?      @db.Text
+  engineRef      String?      @db.VarChar(255)
   sentAt         DateTime?
   expiresAt      DateTime?
-  createdAt      DateTime @default(now()) @db.Timestamp
-  updatedAt      DateTime @updatedAt
+  createdAt      DateTime     @default(now()) @db.Timestamp
+  updatedAt      DateTime     @updatedAt
+  PlatformApp    PlatformApp? @relation(fields: [platformAppId], references: [id])
+  platformAppId  String?
 
   @@unique([accountId, instanceId, idempotencyKey])
   @@index([instanceId, status])
   @@index([accountId, createdAt])
+  @@index([appId])
 }
 
 model PlatformWebhook {
   id         String   @id @default(cuid())
   publicId   String   @unique @db.VarChar(50)
   accountId  String
+  appId      String?
   instanceId String
   url        String   @db.VarChar(500)
   events     Json     @default("[]")
   secret     String   @db.VarChar(64)
   enabled    Boolean  @default(true)
-  createdAt DateTime @default(now()) @db.Timestamp
-  updatedAt DateTime @updatedAt
+  createdAt  DateTime @default(now()) @db.Timestamp
+  updatedAt  DateTime @updatedAt
 
-  account   PlatformAccount      @relation(fields: [accountId], references: [id])
+  account    PlatformAccount           @relation(fields: [accountId], references: [id])
+  app        PlatformApp?              @relation(fields: [appId], references: [id])
   deliveries PlatformWebhookDelivery[]
 
   @@index([accountId])
+  @@index([appId])
   @@index([instanceId])
   @@index([enabled])
 }
 
 model PlatformWebhookDelivery {
-  id              String    @id @default(cuid())
+  id             String    @id @default(cuid())
   publicId       String    @unique @db.VarChar(50)
   webhookId      String
-  eventId        String   @db.VarChar(50)
-  deliveryId     String   @db.VarChar(50)
-  attempt        Int      @default(1)
-  status         String   @db.VarChar(20)
-  responseStatus  Int?
-  responseTimeMs  Int?
-  nextRetryAt     DateTime?
-  lastError      String?  @db.Text
-  deliveredAt     DateTime?
-  createdAt      DateTime @default(now()) @db.Timestamp
+  eventId        String    @db.VarChar(50)
+  deliveryId     String    @db.VarChar(50)
+  attempt        Int       @default(1)
+  status         String    @db.VarChar(20)
+  responseStatus Int?
+  responseTimeMs Int?
+  nextRetryAt    DateTime?
+  lastError      String?   @db.Text
+  deliveredAt    DateTime?
+  createdAt      DateTime  @default(now()) @db.Timestamp
 
-  webhook PlatformWebhook @relation(fields: [webhookId], references: [id])
+  webhook PlatformWebhook    @relation(fields: [webhookId], references: [id])
+  events  InstanceEventLog[]
 
+  @@unique([webhookId, eventId, attempt])
   @@index([webhookId, createdAt])
   @@index([eventId])
 }
 
+model PlatformInstance {
+  id              String    @id @default(dbgenerated("gen_random_uuid()"))
+  publicId        String    @unique @db.VarChar(50)
+  accountId       String    @db.VarChar(255)
+  appId           String?   @db.VarChar(255)
+  name            String    @db.VarChar(255)
+  status          String    @default("CREATED")
+  phoneNumber     String?   @db.VarChar(20)
+  capabilities    Json      @default("[]")
+  lastConnectedAt DateTime?
+  createdAt       DateTime  @default(now()) @db.Timestamp
+  updatedAt       DateTime  @updatedAt
+
+  account         PlatformAccount    @relation(fields: [accountId], references: [id])
+  app             PlatformApp?       @relation(fields: [appId], references: [id])
+  lifecycleEvents InstanceEventLog[]
+  contacts        PlatformContact[]
+  groups          PlatformGroup[]
+
+  @@unique([accountId, name])
+  @@index([accountId])
+  @@index([appId])
+  @@index([accountId, appId])
+  @@index([status])
+}
+
+model InstanceEventLog {
+  id         String   @id @default(dbgenerated("gen_random_uuid()"))
+  publicId   String   @unique @db.VarChar(50)
+  instanceId String   @db.VarChar(255)
+  eventType  String   @db.VarChar(100)
+  payload    Json     @default("{}")
+  createdAt  DateTime @default(now()) @db.Timestamp
+
+  instance   PlatformInstance          @relation(fields: [instanceId], references: [id])
+  deliveries PlatformWebhookDelivery[]
+
+  @@index([instanceId, createdAt])
+}
+
+model PlatformContact {
+  id              String    @id @default(dbgenerated("gen_random_uuid()"))
+  publicId        String    @unique @db.VarChar(50)
+  accountId       String    @db.VarChar(255)
+  appId           String?   @db.VarChar(255)
+  instanceId      String    @db.VarChar(255)
+  phoneNumber     String    @db.VarChar(20)
+  displayName     String?
+  profilePhotoUrl String?
+  lastSeenAt      DateTime?
+  createdAt       DateTime  @default(now()) @db.Timestamp
+  updatedAt       DateTime  @updatedAt
+
+  account  PlatformAccount  @relation(fields: [accountId], references: [id])
+  app      PlatformApp?     @relation(fields: [appId], references: [id])
+  instance PlatformInstance @relation(fields: [instanceId], references: [id])
+
+  @@unique([accountId, phoneNumber])
+  @@index([accountId])
+  @@index([appId])
+  @@index([instanceId])
+}
+
+model PlatformGroup {
+  id               String   @id @default(dbgenerated("gen_random_uuid()"))
+  publicId         String   @unique @db.VarChar(50)
+  accountId        String   @db.VarChar(255)
+  appId            String?  @db.VarChar(255)
+  instanceId       String   @db.VarChar(255)
+  name             String   @db.VarChar(255)
+  participantCount Int      @default(0)
+  createdAt        DateTime @default(now()) @db.Timestamp
+  updatedAt        DateTime @updatedAt
+
+  account    PlatformAccount          @relation(fields: [accountId], references: [id])
+  app        PlatformApp?             @relation(fields: [appId], references: [id])
+  instance   PlatformInstance         @relation(fields: [instanceId], references: [id])
+  engineRefs PlatformGroupEngineRef[]
+
+  @@index([accountId])
+  @@index([appId])
+  @@index([instanceId])
+}
+
+model PlatformGroupEngineRef {
+  id         String @id @default(dbgenerated("gen_random_uuid()"))
+  groupId    String @db.VarChar(255)
+  instanceId String @db.VarChar(255)
+  provider   String @db.VarChar(50)
+  groupJid   String @db.VarChar(100)
+
+  group PlatformGroup @relation(fields: [groupId], references: [id])
+
+  @@unique([instanceId, groupJid])
+}
+
 model PlatformUsageRecord {
-  id              String    @id @default(cuid())
-  accountId       String
-  instanceId      String?
-  operation       String   @db.VarChar(100)
-  resource        String   @db.VarChar(50)
-  quantity        Int      @default(1)
-  unit            String   @db.VarChar(20)
+  id             String   @id @default(cuid())
+  accountId      String
+  appId          String?
+  instanceId     String?
+  operation      String   @db.VarChar(100)
+  resource       String   @db.VarChar(50)
+  quantity       Int      @default(1)
+  unit           String   @db.VarChar(20)
   idempotencyKey String?
-  metadata        Json?
+  metadata       Json?
   periodStart    DateTime @db.Timestamp
   createdAt      DateTime @default(now()) @db.Timestamp
 
   account PlatformAccount @relation(fields: [accountId], references: [id])
+  app     PlatformApp?    @relation(fields: [appId], references: [id])
 
   @@index([accountId, periodStart])
   @@index([accountId, operation, periodStart])
   @@index([accountId, instanceId])
+  @@index([appId])
 }
 
 model PlatformAuditLog {
-  id            String   @id @default(cuid())
-  accountId     String
-  userId        String?
-  apiKeyId      String?
-  action        String   @db.VarChar(100)
-  resource      String?  @db.VarChar(100)
-  resourceId    String?  @db.VarChar(50)
-  requestId     String?  @db.VarChar(50)
-  eventId       String?  @db.VarChar(50)
-  ipAddress     String?  @db.VarChar(45)
-  userAgent     String?  @db.VarChar(500)
-  success       Boolean  @default(true)
-  metadata      Json?
-  createdAt     DateTime @default(now()) @db.Timestamp
+  id         String   @id @default(cuid())
+  accountId  String
+  userId     String?
+  apiKeyId   String?
+  action     String   @db.VarChar(100)
+  resource   String?  @db.VarChar(100)
+  resourceId String?  @db.VarChar(50)
+  requestId  String?  @db.VarChar(50)
+  eventId    String?  @db.VarChar(50)
+  ipAddress  String?  @db.VarChar(45)
+  userAgent  String?  @db.VarChar(500)
+  success    Boolean  @default(true)
+  metadata   Json?
+  createdAt  DateTime @default(now()) @db.Timestamp
 
   account PlatformAccount @relation(fields: [accountId], references: [id])
 
   @@index([accountId, createdAt])
   @@index([accountId, action])
   @@index([requestId])
+}
+
+// ============================================================
+// Project / App hierarchy — added in Phase 2 of the Viventure rebuild
+// ============================================================
+
+enum PlatformProjectStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+model PlatformProject {
+  id          String                @id @default(cuid())
+  publicId    String                @unique @db.VarChar(50)
+  accountId   String                @db.VarChar(255)
+  name        String                @db.VarChar(100)
+  slug        String                @db.VarChar(60)
+  description String?               @db.VarChar(500)
+  status      PlatformProjectStatus @default(ACTIVE)
+  createdAt   DateTime              @default(now()) @db.Timestamp
+  updatedAt   DateTime              @updatedAt
+
+  account PlatformAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  apps    PlatformApp[]
+
+  @@unique([accountId, slug])
+  @@index([accountId])
+  @@index([accountId, status])
+}
+
+enum PlatformAppStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+model PlatformApp {
+  id          String            @id @default(cuid())
+  publicId    String            @unique @db.VarChar(50)
+  accountId   String            @db.VarChar(255)
+  projectId   String            @db.VarChar(255)
+  name        String            @db.VarChar(100)
+  slug        String            @db.VarChar(60)
+  description String?           @db.VarChar(500)
+  status      PlatformAppStatus @default(ACTIVE)
+  createdAt   DateTime          @default(now()) @db.Timestamp
+  updatedAt   DateTime          @updatedAt
+
+  account      PlatformAccount          @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  project      PlatformProject          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  instances    PlatformInstance[]
+  apiKeys      PlatformApiKey[]
+  webhooks     PlatformWebhook[]
+  contacts     PlatformContact[]
+  groups       PlatformGroup[]
+  messageCmds  PlatformMessageCommand[]
+  usageRecords PlatformUsageRecord[]
+
+  @@unique([projectId, slug])
+  @@index([accountId])
+  @@index([projectId])
+  @@index([accountId, status])
 }
