@@ -13,6 +13,7 @@
  */
 
 import { Request, Response, Router } from 'express';
+import { createClient, RedisClientType } from 'redis';
 
 import { evolutionAdapter } from '../adapters/evolution.adapter';
 import { hybridAuth } from '../middleware/hybrid-auth.middleware';
@@ -586,10 +587,32 @@ router.post(
     }
 
     try {
+      const startedAt = Date.now();
       await handleTool(tool, parameters ?? {}, platformTenant, req, res);
+      const latencyMs = Date.now() - startedAt;
+      // Fire-and-forget audit + SSE publish so the dashboard can show a
+      // live activity feed. We do not block the response on these.
+      void auditService.record(platformTenant.accountId, 'MCP_INVOKE', { type: 'mcp-tool', id: tool }, {
+        latencyMs,
+        toolParametersKeys: Object.keys(parameters ?? {}),
+      });
+      void publishMcpEvent(platformTenant.accountId, {
+        tool,
+        latencyMs,
+        status: 'ok',
+        parameters: parameters ?? {},
+      });
     } catch (error) {
       console.error(`[MCP] Tool "${tool}" error:`, error);
       const message = error instanceof Error ? error.message : 'Internal error';
+      void auditService.record(platformTenant.accountId, 'MCP_INVOKE_ERROR', { type: 'mcp-tool', id: tool }, {
+        error: message,
+      });
+      void publishMcpEvent(platformTenant.accountId, {
+        tool,
+        status: 'error',
+        error: message,
+      });
       jsonRpcError(res, JSONRPC_INTERNAL_ERROR, message);
     }
   },
@@ -1136,3 +1159,160 @@ async function handleTool(
 }
 
 export { router as mcpRouter };
+
+// ─── Activity event stream ───────────────────────────────────────────────────
+
+/**
+ * Lazily-initialized Redis publisher used to push MCP invocation
+ * events to any subscribed SSE consumers (e.g. the dashboard's
+ * live activity panel). We use a per-account channel so the SSE
+ * endpoint can subscribe to just one tenant's stream.
+ */
+let redisPublisher: RedisClientType | null = null;
+async function getRedisPublisher(): Promise<RedisClientType | null> {
+  if (redisPublisher) return redisPublisher;
+  try {
+    const url = process.env.CACHE_REDIS_URI || 'redis://platform-redis:6379/6';
+    const client = createClient({ url });
+    client.on('error', (err) => {
+      // Suppress noisy errors — the dashboard will fall back to polling
+      // if Redis pub/sub is unavailable.
+      console.warn('[MCP] Redis publisher error:', err);
+    });
+    await client.connect();
+    redisPublisher = client as RedisClientType;
+    return redisPublisher;
+  } catch (err) {
+    console.warn('[MCP] Could not connect Redis publisher:', err);
+    return null;
+  }
+}
+
+async function publishMcpEvent(
+  accountId: string,
+  event: {
+    tool: string;
+    status: 'ok' | 'error';
+    latencyMs?: number;
+    error?: string;
+    parameters?: Record<string, unknown>;
+  },
+): Promise<void> {
+  const publisher = await getRedisPublisher();
+  if (!publisher) return;
+  try {
+    const channel = `fidscript:whatsapp:mcp:${accountId}`;
+    await publisher.publish(channel, JSON.stringify({ ...event, ts: Date.now() }));
+  } catch {
+    /* swallow — never fail a request just because the event bus hiccupped */
+  }
+}
+
+/**
+ * GET /api/v1/platform/mcp/events
+ *
+ * SSE stream of MCP tool invocations for the authenticated account.
+ * Each event is one line: `data: { tool, status, latencyMs, ... }\n\n`
+ *
+ * Falls back gracefully — if Redis is unreachable we send a
+ * `: redis-unavailable` comment and keep the connection open with
+ * heartbeats; the dashboard can fall back to polling the audit log.
+ */
+router.get(
+  '/events',
+  hybridAuth(getSessionService()),
+  tenantResolveMiddleware.resolve,
+  async (req: Request, res: Response) => {
+    const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
+    if (!platformTenant) {
+      res.status(401).json({ error: 'UNAUTHORIZED' });
+      return;
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+    res.write(`: connected to mcp event stream\n\n`);
+    res.flush();
+
+    const keepalive = setInterval(() => {
+      res.write(`: heartbeat\n\n`);
+      res.flush();
+    }, 25000);
+
+    let subscriber: RedisClientType | null = null;
+    let cancelled = false;
+    try {
+      const url = process.env.CACHE_REDIS_URI || 'redis://platform-redis:6379/6';
+      subscriber = createClient({ url });
+      subscriber.on('error', (err) => {
+        console.warn('[MCP SSE] subscriber error:', err);
+        res.write(`: redis-error\n\n`);
+        res.flush();
+      });
+      await subscriber.connect();
+      const channel = `fidscript:whatsapp:mcp:${platformTenant.accountId}`;
+      await subscriber.subscribe(channel, (message) => {
+        if (cancelled) return;
+        res.write(`event: mcp_invoke\ndata: ${message}\n\n`);
+        res.flush();
+      });
+    } catch (err) {
+      console.warn('[MCP SSE] could not subscribe to Redis:', err);
+      res.write(`: redis-unavailable\n\n`);
+      res.flush();
+    }
+
+    req.on('close', async () => {
+      cancelled = true;
+      clearInterval(keepalive);
+      if (subscriber) {
+        try {
+          await subscriber.unsubscribe();
+          await subscriber.disconnect();
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+  },
+);
+
+/**
+ * GET /api/v1/platform/mcp/events/history
+ *
+ * Recent MCP invocation history (last 50). Used as a fallback when
+ * SSE is unavailable or to backfill on initial page load.
+ */
+router.get(
+  '/events/history',
+  hybridAuth(getSessionService()),
+  tenantResolveMiddleware.resolve,
+  async (req: Request, res: Response) => {
+    const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
+    if (!platformTenant) {
+      res.status(401).json({ error: 'UNAUTHORIZED' });
+      return;
+    }
+    const rows = await platformRepository.platformAuditLog.findMany({
+      where: {
+        accountId: platformTenant.accountId,
+        action: { in: ['MCP_INVOKE', 'MCP_INVOKE_ERROR'] },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+    res.json({
+      events: rows.map((r) => ({
+        id: r.id,
+        tool: r.resourceId ?? '',
+        status: r.action === 'MCP_INVOKE' ? 'ok' : 'error',
+        latencyMs: (r.metadata as any)?.latencyMs,
+        error: (r.metadata as any)?.error,
+        createdAt: r.createdAt,
+      })),
+    });
+  },
+);
