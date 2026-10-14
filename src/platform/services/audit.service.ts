@@ -1,3 +1,4 @@
+import { InputJsonValue } from '@prisma/client/runtime/library';
 import { platformRepository } from '../repository/platform.repository';
 import { Logger } from '@config/logger.config';
 
@@ -24,7 +25,7 @@ export class AuditService {
   ): Promise<void> {
     const safeMetadata = this.sanitizeMetadata(metadata);
 
-    await platformRepository.platformAuditLog.create({
+    const row = await platformRepository.platformAuditLog.create({
       data: {
         accountId,
         action,
@@ -32,12 +33,40 @@ export class AuditService {
         resourceId: resource.id,
         ipAddress: safeMetadata.ipAddress as string | undefined,
         userAgent: safeMetadata.userAgent as string | undefined,
-        metadata: safeMetadata,
+        metadata: safeMetadata as InputJsonValue,
         createdAt: new Date(),
       },
     });
 
     this.logger.info(`Audit: ${accountId} ${action} ${resource.type}/${resource.id}`);
+
+    // Fire-and-forget SSE publish so the dashboard activity feed
+    // shows the event in real time. Imported lazily to avoid a
+    // circular import (activity-publisher.ts already imports logger).
+    void import('./activity-publisher.service').then(({ publishAccountEvent }) => {
+      const humanAction = action
+        .toLowerCase()
+        .replace(/_/g, ' ')
+        .replace(/^./, (c) => c.toUpperCase());
+      publishAccountEvent(accountId, {
+        id: row.id,
+        kind: 'audit',
+        action,
+        resourceType: resource.type,
+        resourceId: resource.id,
+        projectId: typeof safeMetadata.projectId === 'string' ? safeMetadata.projectId : undefined,
+        appId: typeof safeMetadata.appId === 'string' ? safeMetadata.appId : undefined,
+        instancePublicId:
+          typeof safeMetadata.instancePublicId === 'string'
+            ? safeMetadata.instancePublicId
+            : resource.type === 'instance'
+            ? resource.id
+            : undefined,
+        message: `${humanAction}: ${resource.id}`,
+        metadata: safeMetadata,
+        ts: row.createdAt.getTime(),
+      });
+    });
   }
 
   /**

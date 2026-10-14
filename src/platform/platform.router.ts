@@ -133,6 +133,14 @@ router.use('/platform/sse', createSseRouter(getSessionService()));
 router.use('/platform/mcp', mcpRouter);
 
 /**
+ * Global activity feed — every audit event streams to the
+ * authenticated account's topbar. SSE-only, no scope-enforce
+ * (this is a read channel, not a write).
+ */
+import { activityRoutes } from './routes/activity.routes';
+router.use('/platform/activity', hybridAuth(getSessionService()), tenantResolveMiddleware.resolve, activityRoutes);
+
+/**
  * Web console instance routes — session auth + API key auth.
  * Mount BEFORE platformRoutes so more-specific instance paths are matched first.
  * hybridAuth accepts EITHER X-API-Key OR sessionId cookie.
