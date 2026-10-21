@@ -1,7 +1,8 @@
+import { Logger } from '@config/logger.config';
 import crypto from 'crypto';
+
 import { platformRepository } from '../repository/platform.repository';
 import { WebhookService } from '../services/webhook.service';
-import { Logger } from '@config/logger.config';
 
 /**
  * Webhook Delivery Worker
@@ -55,11 +56,16 @@ export class WebhookDeliveryWorker {
 
   /**
    * Process pending deliveries.
+   * Only processes rows whose nextRetryAt has passed (if set).
+   * Rows exceeding maxRetries are moved to 'deferred'.
    */
   private async processPending(): Promise<void> {
     const pending = await platformRepository.platformWebhookDelivery.findMany({
-      where: { status: { in: ['queued', 'failed'] } },
-      include: { platformWebhook: true },
+      where: {
+        status: { in: ['queued', 'failed'] },
+        OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: new Date() } }],
+      },
+      include: { webhook: true },
       take: 20,
       orderBy: { createdAt: 'asc' },
     });
@@ -67,7 +73,7 @@ export class WebhookDeliveryWorker {
     for (const delivery of pending) {
       if (!this.running) break;
 
-      // Skip if max retries exceeded — leave as deferred (Phase 1 has no engine to declare permanent failure)
+      // Skip if max retries exceeded — leave as deferred
       if (delivery.attempt >= this.maxRetries) {
         await platformRepository.platformWebhookDelivery.update({
           where: { id: delivery.id },
@@ -91,7 +97,7 @@ export class WebhookDeliveryWorker {
     // Fetch full delivery record with webhook
     const delivery = await platformRepository.platformWebhookDelivery.findUnique({
       where: { id: deliveryId },
-      include: { platformWebhook: true },
+      include: { webhook: true },
     });
 
     if (!delivery) return;
@@ -108,7 +114,7 @@ export class WebhookDeliveryWorker {
     // Decrypt secret
     let secret: string;
     try {
-      secret = this.webhookService.decrypt(delivery.platformWebhook.secret);
+      secret = this.webhookService.decrypt(delivery.webhook.secret);
     } catch (error) {
       this.logger.error(`Failed to decrypt webhook secret: ${error}`);
       await platformRepository.platformWebhookDelivery.update({
@@ -135,7 +141,7 @@ export class WebhookDeliveryWorker {
     };
 
     try {
-      const response = await fetch(delivery.platformWebhook.url, {
+      const response = await fetch(delivery.webhook.url, {
         method: 'POST',
         headers,
         body: payloadStr,
@@ -162,46 +168,56 @@ export class WebhookDeliveryWorker {
 
   /**
    * Handle delivery retry with exponential backoff.
+   * Model B: creates a NEW delivery row per attempt (one row per attempt).
+   * The same eventId (evt_xxx) is reused across all attempts for the same logical event.
    */
-  private async handleRetry(
-    deliveryId: string,
-    error: string,
-  ): Promise<void> {
+  private async handleRetry(deliveryId: string, error: string): Promise<void> {
     const record = await platformRepository.platformWebhookDelivery.findUnique({
       where: { id: deliveryId },
     });
 
     if (!record) return;
 
-    // Calculate backoff: baseDelay * 2^attempt (capped at 5 min)
-    const delayMs = Math.min(this.baseDelayMs * Math.pow(2, record.attempt - 1), 300000);
-
-    // Schedule retry if not exhausted
-    if (record.attempt < this.maxRetries) {
-      await platformRepository.platformWebhookDelivery.update({
-        where: { id: deliveryId },
-        data: {
-          status: 'queued',
-          lastError: error,
-          nextRetryAt: new Date(Date.now() + delayMs),
-        },
-      });
-    } else {
-      // Phase 1: mark as deferred (no engine to declare permanent failure)
+    if (record.attempt >= this.maxRetries) {
+      // Already at max — mark the current row as deferred
       await platformRepository.platformWebhookDelivery.update({
         where: { id: deliveryId },
         data: { status: 'deferred', lastError: error },
       });
+      return;
     }
+
+    // Calculate backoff delay: baseDelay * 2^attempt (capped at 5 min)
+    const delayMs = Math.min(this.baseDelayMs * Math.pow(2, record.attempt - 1), 300000);
+    const nextRetryAt = new Date(Date.now() + delayMs);
+
+    // Create a NEW delivery row with incremented attempt — Model B
+    const newDeliveryId = `del_${crypto.randomBytes(12).toString('hex')}`;
+    await platformRepository.platformWebhookDelivery.create({
+      data: {
+        webhookId: record.webhookId,
+        eventId: record.eventId,
+        deliveryId: newDeliveryId,
+        status: 'queued',
+        attempt: record.attempt + 1,
+        lastError: error,
+        nextRetryAt,
+      } as unknown as Parameters<typeof platformRepository.platformWebhookDelivery.create>[0]['data'],
+    });
+
+    // Mark the old row as failed
+    await platformRepository.platformWebhookDelivery.update({
+      where: { id: deliveryId },
+      data: { status: 'failed', lastError: error },
+    });
   }
 
   /**
-   * Enqueue a webhook delivery (Phase 1 synthetic events).
+   * Enqueue a webhook delivery for a given (webhookId, eventId) pair.
+   * Creates a new delivery row with attempt=1.
+   * Used for both Phase 1 synthetic events and Phase 2 lifecycle events.
    */
-  public async enqueueDelivery(
-    webhookId: string,
-    eventId: string,
-  ): Promise<void> {
+  public async enqueueDelivery(webhookId: string, eventId: string): Promise<void> {
     const publicId = `del_${crypto.randomBytes(12).toString('hex')}`;
     await platformRepository.platformWebhookDelivery.create({
       data: {
@@ -209,18 +225,20 @@ export class WebhookDeliveryWorker {
         eventId,
         deliveryId: publicId,
         status: 'queued',
-      },
+      } as unknown as Parameters<typeof platformRepository.platformWebhookDelivery.create>[0]['data'],
     });
   }
 
   /**
    * Send a synthetic test event (Phase 1).
-   * The eventId is stable — the same logical event reuses the same eventId
-   * across all delivery attempts, as required by the contract.
+   * Stable eventId: generated once per (webhookId) and reused for all delivery attempts
+   * of the same logical test event, as required by the stable eventId contract.
+   * Uses webhook's deliveryId prefix to create a deterministic test eventId.
    */
   public async sendTestEvent(webhookId: string): Promise<void> {
-    // Stable eventId: generated once per logical test event, reused for all delivery attempts
-    const eventId = `evt_test_${Date.now()}`;
+    // Stable eventId derived from webhook's publicId — deterministic, not timestamp-based
+    const webhook = await platformRepository.platformWebhook.findUnique({ where: { id: webhookId } });
+    const eventId = `evt_test_${webhook?.publicId ?? webhookId}`;
     await this.enqueueDelivery(webhookId, eventId);
   }
 

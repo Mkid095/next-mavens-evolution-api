@@ -9,11 +9,11 @@ import {
   CampaignRecipient,
   CampaignStatusDto,
   CreateCampaignDto,
-  SendCampaignDto,
   ScheduleCampaignDto,
+  SendCampaignDto,
 } from '../dto/campaign.dto';
 
-interface Campaign {
+export interface Campaign {
   id: string;
   name: string;
   instanceName: string;
@@ -162,17 +162,17 @@ export class CampaignService {
     const delayBetweenMessages = Math.ceil(60000 / campaign.maxPerMinute); // milliseconds between messages
     const batchSize = Math.min(10, campaign.maxPerMinute); // Process in small batches
 
-    for (let i = 0; i < campaign.recipients.length && campaign.status !== 'cancelled'; i += batchSize) {
-      if (campaign.status === 'paused') {
+    for (let i = 0; i < campaign.recipients.length && (campaign.status as any) !== 'cancelled'; i += batchSize) {
+      if ((campaign.status as any) === 'paused') {
         // Wait until resumed or cancelled
         await this.waitForResume(campaignId);
-        if (campaign.status === 'cancelled') break;
+        if ((campaign.status as any) === 'cancelled') break;
       }
 
       const batch = campaign.recipients.slice(i, i + batchSize);
 
       for (const recipient of batch) {
-        if (campaign.status === 'cancelled') break;
+        if ((campaign.status as any) === 'cancelled') break;
 
         try {
           // The actual sending would be handled by the controller
@@ -183,7 +183,7 @@ export class CampaignService {
         } catch (error) {
           campaign.failed++;
           campaign.pending--;
-          this.logger.error(`Failed to send to ${recipient.phone}:`, error);
+          (this.logger.error as any)(`Failed to send to ${recipient.phone}:`, error);
         }
 
         // Rate limiting delay
@@ -192,7 +192,7 @@ export class CampaignService {
     }
 
     campaign.endTime = new Date();
-    campaign.status = campaign.status === 'paused' ? 'paused' : 'completed';
+    campaign.status = (campaign.status as any) === 'paused' ? 'paused' : 'completed';
     campaign.updatedAt = new Date();
 
     this.logger.log(`Campaign ${campaignId} completed. Sent: ${campaign.sent}, Failed: ${campaign.failed}`);

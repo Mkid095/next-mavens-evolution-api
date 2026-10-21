@@ -1,5 +1,6 @@
-import { platformRepository } from '../repository/platform.repository';
 import { Logger } from '@config/logger.config';
+
+import { platformRepository } from '../repository/platform.repository';
 
 /**
  * Entitlement Service
@@ -17,7 +18,7 @@ export class EntitlementService {
       include: { plan: true },
     });
     if (!subscription) return false;
-    const features = (subscription.plan as Record<string, boolean>) ?? {};
+    const features = (subscription.plan as unknown as Record<string, boolean>) ?? {};
     return features[feature] === true;
   }
 
@@ -26,7 +27,6 @@ export class EntitlementService {
    */
   public async checkMessageLimit(accountId: string): Promise<{ allowed: boolean; current: number; limit: number }> {
     const now = new Date();
-    const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
     const usage = await platformRepository.platformUsageRecord.findFirst({
       where: {

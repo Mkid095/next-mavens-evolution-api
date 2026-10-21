@@ -1,6 +1,8 @@
-import { Request, Response, NextFunction } from 'express';
-import { EntitlementService } from '../services/entitlement.service';
 import { Logger } from '@config/logger.config';
+import { NextFunction, Request, Response } from 'express';
+
+import { EntitlementService } from '../services/entitlement.service';
+import { PlatformTenant } from '../types/platform-tenant';
 
 /**
  * Entitlement Middleware
@@ -20,7 +22,7 @@ export class EntitlementMiddleware {
    * Must be used AFTER tenantResolve middleware.
    */
   public checkMessageLimit = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const platformTenant = (req as Request & { platformTenant?: { accountId: string } }).platformTenant;
+    const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
 
     if (!platformTenant?.accountId) {
       res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication required' });
@@ -57,7 +59,7 @@ export class EntitlementMiddleware {
    */
   public requireFeature = (feature: string) => {
     return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-      const platformTenant = (req as Request & { platformTenant?: { accountId: string } }).platformTenant;
+      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
 
       if (!platformTenant?.accountId) {
         res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication required' });

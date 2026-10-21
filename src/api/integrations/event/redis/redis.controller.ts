@@ -12,10 +12,11 @@
  * so WhatsApp events flow through the same pub/sub infrastructure.
  */
 
-import { createClient } from 'redis';
 import { PrismaRepository } from '@api/repository/repository.service';
 import { WAMonitoringService } from '@api/services/monitor.service';
+import { configService } from '@config/env.config';
 import { Logger } from '@config/logger.config';
+import { createClient } from 'redis';
 
 export class RedisEventController {
   private logger = new Logger('RedisEvent');
@@ -27,7 +28,6 @@ export class RedisEventController {
   constructor(prismaRepository: PrismaRepository, waMonitor: WAMonitoringService) {
     this.prismaRepository = prismaRepository;
     this.waMonitor = waMonitor;
-    const { configService } = require('@config/env.config');
     this.redisUrl = configService.get('CACHE')?.REDIS?.URI || process.env.CACHE_REDIS_URI || 'redis://localhost:6379';
   }
 
@@ -35,15 +35,15 @@ export class RedisEventController {
     try {
       this.client = createClient({ url: this.redisUrl });
       this.client.on('error', (err: Error) => {
-        this.logger.error('Redis event client error', { error: err.message });
+        (this.logger.error as any)('Redis event client error', { error: err.message });
       });
       this.client.on('connect', () => {
         this.logger.verbose('Redis event publisher connected');
       });
       await this.client.connect();
-      this.logger.info('Redis event publisher initialized', { url: this.redisUrl });
+      (this.logger.info as any)('Redis event publisher initialized', { url: this.redisUrl });
     } catch (err) {
-      this.logger.error('Failed to init Redis event publisher', { error: (err as Error).message });
+      (this.logger.error as any)('Failed to init Redis event publisher', { error: (err as Error).message });
     }
   }
 
@@ -63,8 +63,10 @@ export class RedisEventController {
 
     try {
       // Publish to instance-specific channel and a wildcard channel for all WhatsApp events
+      // Normalize event name to lowercase dot-notation to match SSE subscription format
+      const normalizedEvent = eventData.event.toLowerCase().replace(/_/g, '.');
       const channels = [
-        `fidscript:whatsapp:${eventData.instanceName}.${eventData.event}`,
+        `fidscript:whatsapp:${eventData.instanceName}.${normalizedEvent}`,
         'fidscript:whatsapp:*', // wildcard for future cross-instance subscribers
       ];
 
@@ -93,17 +95,15 @@ export class RedisEventController {
       const message = JSON.stringify(platformEvent);
 
       // Publish to all channels in parallel
-      await Promise.allSettled(
-        channels.map((channel) => this.client!.publish(channel, message))
-      );
+      await Promise.allSettled(channels.map((channel) => this.client!.publish(channel, message)));
 
-      this.logger.debug('Published WhatsApp event to Redis', {
+      (this.logger.debug as any)('Published WhatsApp event to Redis', {
         channel: channels[0],
         event: eventData.event,
         instance: eventData.instanceName,
       });
     } catch (err) {
-      this.logger.error('Failed to publish WhatsApp event to Redis', {
+      (this.logger.error as any)('Failed to publish WhatsApp event to Redis', {
         error: (err as Error).message,
         event: eventData.event,
       });

@@ -98,4 +98,18 @@ export class CacheService {
     }
     return this.cache.keys(appendCriteria);
   }
+
+  // Alias for delete() to match call sites using .del()
+  async del(key: string) {
+    return this.delete(key);
+  }
+
+  async getTtl(key: string): Promise<number> {
+    if (!this.cache) {
+      return 0;
+    }
+    // ICache doesn't expose TTL directly; fallback to 0 (key kept for API compatibility)
+    void key;
+    return 0;
+  }
 }

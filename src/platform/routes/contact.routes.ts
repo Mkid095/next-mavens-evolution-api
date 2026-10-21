@@ -5,13 +5,7 @@ import { platformAuthMiddleware } from '../middleware/platform-auth.middleware';
 import { tenantResolveMiddleware } from '../middleware/tenant-resolve.middleware';
 import { platformRepository } from '../repository/platform.repository';
 import { AuditService } from '../services/audit.service';
-
-interface PlatformTenant {
-  accountId: string;
-  publicId: string;
-  status: string;
-  plan: { planId: string; name: string; monthlyMessageLimit: number | null };
-}
+import { PlatformTenant } from '../types/platform-tenant';
 
 const router: Router = Router();
 const auditService = new AuditService();
@@ -104,6 +98,7 @@ router.post(
           create: {
             publicId: contact.id,
             accountId: platformTenant.accountId,
+            appId: platformTenant.defaultApp.id,
             instanceId: instance.id,
             phoneNumber: contact.phoneNumber,
             displayName: contact.displayName,

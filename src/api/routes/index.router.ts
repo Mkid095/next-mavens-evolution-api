@@ -1,3 +1,6 @@
+// Bootstrap the platform module — starts OutboxWorker, LifecycleEventWorker, WebhookDeliveryWorker
+import '@platform/platform.module';
+
 import { authGuard } from '@api/guards/auth.guard';
 import { instanceExistsGuard, instanceLoggedGuard } from '@api/guards/instance.guard';
 import Telemetry from '@api/guards/telemetry.guard';
@@ -6,12 +9,13 @@ import { EventRouter } from '@api/integrations/event/event.router';
 import { StorageRouter } from '@api/integrations/storage/storage.router';
 import { prismaRepository, waMonitor } from '@api/server.module';
 import { configService, Database, Facebook } from '@config/env.config';
+import { platformRouter } from '@platform/platform.router';
 import { fetchLatestWaWebVersion } from '@utils/fetchLatestWaWebVersion';
 import { NextFunction, Request, Response, Router } from 'express';
 import fs from 'fs';
 
-import { AntiBanRouter } from './anti-ban.router';
 import { AnalyticsRouter } from './analytics.router';
+import { AntiBanRouter } from './anti-ban.router';
 import { BusinessRouter } from './business.router';
 import { CallRouter } from './call.router';
 import { CampaignRouter } from './campaign.router';
@@ -23,7 +27,6 @@ import { ProxyRouter } from './proxy.router';
 import { MessageRouter } from './sendMessage.router';
 import { SettingsRouter } from './settings.router';
 import { TemplateRouter } from './template.router';
-import { platformRouter } from '@platform/platform.router';
 
 enum HttpStatus {
   OK = 200,
@@ -198,7 +201,11 @@ router
       const key = `health:${Date.now()}`;
       // Access cache via the waMonitor's injected cache if available,
       // or skip if cache is not initialised
-      const cache = (waMonitor as unknown as { cache?: { get: (k: string) => Promise<unknown>; set: (k: string, v: unknown, t: number) => Promise<void> } }).cache;
+      const cache = (
+        waMonitor as unknown as {
+          cache?: { get: (k: string) => Promise<unknown>; set: (k: string, v: unknown, t: number) => Promise<void> };
+        }
+      ).cache;
       if (cache) {
         await cache.set(key, 1, 10);
         await cache.get(key);
@@ -217,13 +224,13 @@ router
         name,
         state: (inst as { connectionStatus?: { state?: string } })?.connectionStatus?.state || 'unknown',
       }));
-      const connected = instanceList.filter(i => i.state === 'open').length;
+      const connected = instanceList.filter((i) => i.state === 'open').length;
       checks.instances = { status: 'up', detail: `${connected}/${instanceList.length} connected` };
     } catch (err) {
       checks.instances = { status: 'down', detail: err instanceof Error ? err.message : String(err) };
     }
 
-    const overall = Object.values(checks).every(c => c.status === 'up');
+    const overall = Object.values(checks).every((c) => c.status === 'up');
     res.status(overall ? HttpStatus.OK : 503).json({
       status: overall ? 'healthy' : 'degraded',
       version: packageJson.version,

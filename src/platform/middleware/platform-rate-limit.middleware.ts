@@ -1,7 +1,9 @@
-import { Request, Response, NextFunction } from 'express';
-import { RateLimitService } from '../services/rate-limit.service';
-import { platformRepository } from '../repository/platform.repository';
 import { Logger } from '@config/logger.config';
+import { NextFunction, Request, Response } from 'express';
+
+import { platformRepository } from '../repository/platform.repository';
+import { RateLimitService } from '../services/rate-limit.service';
+import { PlatformTenant } from '../types/platform-tenant';
 
 /**
  * Platform Rate Limit Middleware
@@ -17,7 +19,7 @@ export class PlatformRateLimitMiddleware {
   }
 
   public apply = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const platformTenant = (req as Request & { platformTenant?: { accountId: string } }).platformTenant;
+    const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
 
     if (!platformTenant?.accountId) {
       res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication required' });
@@ -36,11 +38,7 @@ export class PlatformRateLimitMiddleware {
         return;
       }
 
-      const result = await this.rateLimitService.checkLimit(
-        platformTenant.accountId,
-        policy.requestsPerMinute,
-        60_000,
-      );
+      const result = await this.rateLimitService.checkLimit(platformTenant.accountId, policy.requestsPerMinute, 60_000);
 
       res.setHeader('X-RateLimit-Limit', policy.requestsPerMinute);
       res.setHeader('X-RateLimit-Remaining', result.remaining);

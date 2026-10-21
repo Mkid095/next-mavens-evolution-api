@@ -1,5 +1,6 @@
-import { platformRepository } from '../repository/platform.repository';
 import { Logger } from '@config/logger.config';
+
+import { platformRepository } from '../repository/platform.repository';
 
 /**
  * Usage Service
@@ -10,12 +11,17 @@ export class UsageService {
 
   /**
    * Record usage of a resource operation.
+   *
+   * `appId` is the internal PlatformApp id (cuid) the usage is scoped
+   * to — the `appId` column is NOT NULL in the database, as are the
+   * `resource` and `unit` columns.
    */
   public async recordUsage(
     accountId: string,
     operation: string,
     quantity: number,
     periodStart: Date,
+    appId: string,
   ): Promise<void> {
     const existing = await platformRepository.platformUsageRecord.findFirst({
       where: { accountId, operation, periodStart },
@@ -28,7 +34,15 @@ export class UsageService {
       });
     } else {
       await platformRepository.platformUsageRecord.create({
-        data: { accountId, operation, quantity, periodStart },
+        data: {
+          accountId,
+          appId,
+          operation,
+          resource: 'message',
+          unit: 'message',
+          quantity,
+          periodStart,
+        },
       });
     }
   }

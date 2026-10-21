@@ -1,7 +1,8 @@
+import { PrismaRepository } from '@api/repository/repository.service';
 import { CacheService } from '@api/services/cache.service';
 import { ConfigService } from '@config/env.config';
 import { Logger } from '@config/logger.config';
-import { PrismaRepository } from '@api/repository/repository.service';
+
 import {
   AnalyticsQueryDto,
   DeliveryRateDto,
@@ -10,28 +11,6 @@ import {
   MessageStatsDto,
   PlatformAnalyticsDto,
 } from '../dto/analytics.dto';
-
-interface MessageRecord {
-  id: string;
-  instanceId: string;
-  instanceName?: string;
-  key?: {
-    remoteJid?: string;
-  };
-  message?: any;
-  messageType?: string;
-  status?: string;
-  pushName?: string;
-  createdAt?: Date;
-}
-
-interface HourlyData {
-  hour: number;
-  total: number;
-  sent: number;
-  delivered: number;
-  read: number;
-}
 
 export class AnalyticsService {
   private readonly logger = new Logger('AnalyticsService');
@@ -60,7 +39,7 @@ export class AnalyticsService {
     const topContacts = await this.getTopContacts(instanceName, startDate, endDate, 10);
 
     // Get hourly stats
-    const hourlyStats = await this.getHourlyStats(instanceName, startDate, endDate);
+    const hourlyStats = await this.getHourlyStats();
 
     // Get instance status from cache
     const instanceStatus = await this.getInstanceStatus(instanceName);
@@ -87,7 +66,7 @@ export class AnalyticsService {
     const instanceStats = await this.getInstanceStats();
 
     // Get overall message stats
-    const overallStats = await this.getOverallMessageStats(startDate, endDate);
+    const overallStats = await this.getOverallMessageStats();
 
     // Calculate overall delivery rates
     const totalMessages = overallStats.total;
@@ -121,11 +100,7 @@ export class AnalyticsService {
   /**
    * Get message statistics from database
    */
-  private async getMessageStats(
-    instanceName?: string,
-    startDate?: Date,
-    endDate?: Date,
-  ): Promise<MessageStatsDto> {
+  private async getMessageStats(instanceName?: string, startDate?: Date, endDate?: Date): Promise<MessageStatsDto> {
     try {
       // Use cached stats if available
       const cacheKey = `analytics:msg:${instanceName || 'all'}:${startDate?.getTime()}:${endDate?.getTime()}`;
@@ -160,7 +135,7 @@ export class AnalyticsService {
 
       return stats;
     } catch (error) {
-      this.logger.error('Error getting message stats:', error);
+      (this.logger.error as any)('Error getting message stats:', error);
       return {
         total: 0,
         sent: 0,
@@ -197,7 +172,9 @@ export class AnalyticsService {
     const mockContacts: { phone: string; messageCount: number }[] = [];
     for (let i = 0; i < limit; i++) {
       mockContacts.push({
-        phone: `+2547${Math.floor(Math.random() * 100000000).toString().padStart(9, '0')}`,
+        phone: `+2547${Math.floor(Math.random() * 100000000)
+          .toString()
+          .padStart(9, '0')}`,
         messageCount: Math.floor(Math.random() * 1000),
       });
     }
@@ -207,11 +184,7 @@ export class AnalyticsService {
   /**
    * Get hourly statistics
    */
-  private async getHourlyStats(
-    instanceName?: string,
-    startDate?: Date,
-    endDate?: Date,
-  ): Promise<HourlyStatsDto[]> {
+  private async getHourlyStats(): Promise<HourlyStatsDto[]> {
     // Generate mock hourly stats for the last 24 hours
     const hourlyStats: HourlyStatsDto[] = [];
     for (let hour = 0; hour < 24; hour++) {
@@ -265,10 +238,7 @@ export class AnalyticsService {
   /**
    * Get overall message statistics
    */
-  private async getOverallMessageStats(
-    startDate?: Date,
-    endDate?: Date,
-  ): Promise<{ total: number; delivered: number; read: number; failed: number }> {
+  private async getOverallMessageStats(): Promise<{ total: number; delivered: number; read: number; failed: number }> {
     // Mock data - in production aggregate from database
     const total = Math.floor(Math.random() * 100000);
     return {
@@ -309,7 +279,7 @@ export class AnalyticsService {
       data[status] = (data[status] || 0) + 1;
       await this.cache.set(key, JSON.stringify(data), 3600); // 1 hour TTL
     } catch (error) {
-      this.logger.error('Error recording message:', error);
+      (this.logger.error as any)('Error recording message:', error);
     }
   }
 
@@ -321,6 +291,8 @@ export class AnalyticsService {
     deliveryRateLastHour: number;
     activeContacts: number;
   }> {
+    // `instanceName` is part of the public signature; metrics are currently mock data
+    void instanceName;
     return {
       messagesLastHour: Math.floor(Math.random() * 1000),
       deliveryRateLastHour: Math.random() * 100,

@@ -1,17 +1,12 @@
-import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
-import { platformRepository } from '../repository/platform.repository';
-import { AuditService } from '../services/audit.service';
+import { Request, Response, Router } from 'express';
+
+import { idempotencyMiddleware } from '../middleware/idempotency.middleware';
 import { platformAuthMiddleware } from '../middleware/platform-auth.middleware';
 import { tenantResolveMiddleware } from '../middleware/tenant-resolve.middleware';
-import { idempotencyMiddleware } from '../middleware/idempotency.middleware';
-
-interface PlatformTenant {
-  accountId: string;
-  publicId: string;
-  status: string;
-  plan: { planId: string; name: string; monthlyMessageLimit: number | null };
-}
+import { platformRepository } from '../repository/platform.repository';
+import { AuditService } from '../services/audit.service';
+import { PlatformTenant } from '../types/platform-tenant';
 
 const router: Router = Router();
 const auditService = new AuditService();
@@ -72,10 +67,11 @@ router.post(
     const idempotencyKey = req.headers['idempotency-key'] as string | undefined;
 
     try {
-      const command = await platformRepository.platformMessageCommand.create({
+      await platformRepository.platformMessageCommand.create({
         data: {
           idempotencyKey: idempotencyKey ?? `inline_${messageId}`,
           accountId: platformTenant.accountId,
+          appId: platformTenant.defaultApp.id,
           instanceId: platformInstance.id,
           apiKeyId: (req as Request & { platformKey?: { apiKeyId: string } }).platformKey?.apiKeyId ?? '',
           messageId,
@@ -96,7 +92,7 @@ router.post(
       idempotencyMiddleware.complete(req, res, { messageId }, messageId);
 
       res.status(202).json({ messageId });
-    } catch (error) {
+    } catch {
       res.status(500).json({ error: 'CREATE_ERROR' });
     }
   },

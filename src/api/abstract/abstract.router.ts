@@ -4,7 +4,7 @@ import { GetParticipant, GroupInvite } from '@api/dto/group.dto';
 import { InstanceDto } from '@api/dto/instance.dto';
 import { Logger } from '@config/logger.config';
 import { BadRequestException } from '@exceptions';
-import { Request } from 'express';
+import { Request, Router } from 'express';
 import { JSONSchema7 } from 'json-schema';
 import { validate } from 'jsonschema';
 
@@ -18,6 +18,7 @@ type DataValidate<T> = {
 const logger = new Logger('Validate');
 
 export abstract class RouterBroker {
+  public router: Router;
   constructor() {}
   public routerPath(path: string, param = true) {
     let route = '/' + path;

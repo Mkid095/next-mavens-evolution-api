@@ -1,21 +1,18 @@
-import { Router, Request, Response } from 'express';
-import { WebhookService } from '../services/webhook.service';
-import { AuditService } from '../services/audit.service';
+import { Logger } from '@config/logger.config';
+import { Request, Response, Router } from 'express';
+
+import { idempotencyMiddleware } from '../middleware/idempotency.middleware';
 import { platformAuthMiddleware } from '../middleware/platform-auth.middleware';
 import { tenantResolveMiddleware } from '../middleware/tenant-resolve.middleware';
-import { idempotencyMiddleware } from '../middleware/idempotency.middleware';
 import { platformRepository } from '../repository/platform.repository';
-
-interface PlatformTenant {
-  accountId: string;
-  publicId: string;
-  status: string;
-  plan: { planId: string; name: string; monthlyMessageLimit: number | null };
-}
+import { AuditService } from '../services/audit.service';
+import { WebhookService } from '../services/webhook.service';
+import { PlatformTenant } from '../types/platform-tenant';
 
 const router: Router = Router();
 const webhookService = new WebhookService();
 const auditService = new AuditService();
+const logger = new Logger('WebhookRoutes');
 
 /**
  * List webhooks for the authenticated account.
@@ -31,7 +28,7 @@ router.get(
       const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
       const webhooks = await webhookService.listWebhooks(platformTenant!.accountId);
       res.json(webhooks);
-    } catch (error) {
+    } catch {
       res.status(500).json({ error: 'FETCH_ERROR' });
     }
   },
@@ -63,7 +60,9 @@ router.post(
       });
 
       if (!instance || instance.platformAccountId !== platformTenant!.accountId) {
-        res.status(400).json({ error: 'INVALID_INSTANCE', message: 'Instance not found or does not belong to this account' });
+        res
+          .status(400)
+          .json({ error: 'INVALID_INSTANCE', message: 'Instance not found or does not belong to this account' });
         return;
       }
 
@@ -72,6 +71,7 @@ router.post(
         instanceId,
         url,
         events || [],
+        platformTenant!.defaultApp.id,
       );
 
       await auditService.record(platformTenant!.accountId, 'WEBHOOK_CREATE', {
@@ -79,11 +79,24 @@ router.post(
         id: webhook.publicId,
       });
 
-      idempotencyMiddleware.complete(req, res, { webhook: { publicId: webhook.publicId, url: webhook.url, events: webhook.events, instanceId: webhook.instanceId } }, webhook.publicId);
+      idempotencyMiddleware.complete(
+        req,
+        res,
+        {
+          webhook: {
+            publicId: webhook.publicId,
+            url: webhook.url,
+            events: webhook.events,
+            instanceId: webhook.instanceId,
+          },
+        },
+        webhook.publicId,
+      );
 
       // Return only the public contract
       res.status(201).json({ webhook });
     } catch (error) {
+      logger.error(`Webhook create failed: ${error}`);
       res.status(500).json({ error: 'CREATE_ERROR' });
     }
   },
@@ -121,7 +134,7 @@ router.patch(
       });
 
       res.json({ success: true });
-    } catch (error) {
+    } catch {
       res.status(500).json({ error: 'UPDATE_ERROR' });
     }
   },
@@ -158,7 +171,7 @@ router.delete(
       });
 
       res.json({ success: true });
-    } catch (error) {
+    } catch {
       res.status(500).json({ error: 'DELETE_ERROR' });
     }
   },
@@ -197,7 +210,7 @@ router.post(
 
       // Plaintext secret returned only at rotation — caller must save it
       res.json({ secret: result.secret });
-    } catch (error) {
+    } catch {
       res.status(500).json({ error: 'ROTATE_ERROR' });
     }
   },

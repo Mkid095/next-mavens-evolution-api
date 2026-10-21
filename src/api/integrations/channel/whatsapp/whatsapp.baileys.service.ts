@@ -29,13 +29,11 @@ import {
   GroupUpdateParticipantDto,
   GroupUpdateSettingDto,
 } from '@api/dto/group.dto';
-import { InstanceDto, SetPresenceDto } from '@api/dto/instance.dto';
+import { SetPresenceDto } from '@api/dto/instance.dto';
 import { HandleLabelDto, LabelDto } from '@api/dto/label.dto';
 import {
   Button,
   ContactMessage,
-  FlowAction,
-  FlowScreen,
   InteractiveButton,
   KeyType,
   MediaMessage,
@@ -147,7 +145,6 @@ import FormData from 'form-data';
 import Long from 'long';
 import mimeTypes from 'mime-types';
 import NodeCache from 'node-cache';
-import cron from 'node-cron';
 import { release } from 'os';
 import { join } from 'path';
 import P from 'pino';
@@ -159,6 +156,7 @@ import { v4 } from 'uuid';
 
 import { BaileysMessageProcessor } from './baileysMessage.processor';
 import { useVoiceCallsBaileys } from './voiceCalls/useVoiceCallsBaileys';
+type SendFlowDto = any;
 
 export interface ExtendedIMessageKey extends proto.IMessageKey {
   remoteJidAlt?: string;
@@ -263,6 +261,7 @@ export class BaileysStartupService extends ChannelStartupService {
   public stateConnection: wa.StateConnection = { state: 'close' };
 
   public phoneNumber: string;
+  public openaiService?: any;
 
   public get connectionStatus() {
     return this.stateConnection;
@@ -637,9 +636,7 @@ export class BaileysStartupService extends ChannelStartupService {
         return isGroupJid || isBroadcast || isNewsletter;
       },
       syncFullHistory: this.localSettings.syncFullHistory,
-      shouldSyncHistoryMessage: (msg: proto.Message.IHistorySyncNotification) => {
-        return this.historySyncNotification(msg);
-      },
+      shouldSyncHistoryMessage: () => this.historySyncNotification(),
       cachedGroupMetadata: this.getGroupMetadataCache,
       userDevicesCache: this.userDevicesCache,
       transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 3000 },
@@ -880,8 +877,6 @@ export class BaileysStartupService extends ChannelStartupService {
         console.log(
           `recv ${chats.length} chats, ${contacts.length} contacts, ${messages.length} msgs (is latest: ${isLatest}, progress: ${progress}%), type: ${syncType}`,
         );
-
-        const instance: InstanceDto = { instanceName: this.instance.name };
 
         const contactsMap = new Map();
 
@@ -1852,7 +1847,7 @@ export class BaileysStartupService extends ChannelStartupService {
     });
   }
 
-  private historySyncNotification(msg: proto.Message.IHistorySyncNotification) {
+  private historySyncNotification() {
     // Chatwoot integration removed
     return true;
   }
@@ -2108,12 +2103,7 @@ export class BaileysStartupService extends ChannelStartupService {
     );
   }
 
-  private async sendMessageWithTyping<T = proto.IMessage>(
-    number: string,
-    message: T,
-    options?: Options,
-    isIntegration = false,
-  ) {
+  private async sendMessageWithTyping<T = proto.IMessage>(number: string, message: T, options?: Options) {
     const isWA = (await this.whatsappNumber({ numbers: [number] }))?.shift();
 
     if (!isWA.exists && !isJidGroup(isWA.jid) && !isWA.jid.includes('@broadcast')) {
@@ -2430,7 +2420,7 @@ export class BaileysStartupService extends ChannelStartupService {
   }
 
   // Send Message Controller
-  public async textMessage(data: SendTextDto, isIntegration = false) {
+  public async textMessage(data: SendTextDto) {
     const text = data.text;
 
     if (!text || text.trim().length === 0) {
@@ -2448,7 +2438,6 @@ export class BaileysStartupService extends ChannelStartupService {
         mentionsEveryOne: data?.mentionsEveryOne,
         mentioned: data?.mentioned,
       },
-      isIntegration,
     );
   }
 
@@ -2782,7 +2771,7 @@ export class BaileysStartupService extends ChannelStartupService {
     return result;
   }
 
-  public async mediaMessage(data: SendMediaDto, file?: any, isIntegration = false) {
+  public async mediaMessage(data: SendMediaDto, file?: any) {
     const mediaData: SendMediaDto = { ...data };
 
     if (file) mediaData.media = file.buffer.toString('base64');
@@ -2799,13 +2788,12 @@ export class BaileysStartupService extends ChannelStartupService {
         mentionsEveryOne: data?.mentionsEveryOne,
         mentioned: data?.mentioned,
       },
-      isIntegration,
     );
 
     return mediaSent;
   }
 
-  public async ptvMessage(data: SendPtvDto, file?: any, isIntegration = false) {
+  public async ptvMessage(data: SendPtvDto, file?: any) {
     const mediaData: SendMediaDto = {
       number: data.number,
       media: data.video,
@@ -2830,7 +2818,6 @@ export class BaileysStartupService extends ChannelStartupService {
         mentionsEveryOne: data?.mentionsEveryOne,
         mentioned: data?.mentioned,
       },
-      isIntegration,
     );
 
     return mediaSent;
@@ -3007,7 +2994,7 @@ export class BaileysStartupService extends ChannelStartupService {
     }
   }
 
-  public async audioWhatsapp(data: SendAudioDto, file?: any, isIntegration = false) {
+  public async audioWhatsapp(data: SendAudioDto, file?: any) {
     const mediaData: SendAudioDto = { ...data };
 
     if (file?.buffer) {
@@ -3029,7 +3016,6 @@ export class BaileysStartupService extends ChannelStartupService {
           data.number,
           { audio: convert, ptt: true, mimetype: 'audio/ogg; codecs=opus' },
           { presence: 'recording', delay: data?.delay },
-          isIntegration,
         );
 
         return result;
@@ -3046,7 +3032,6 @@ export class BaileysStartupService extends ChannelStartupService {
         mimetype: 'audio/ogg; codecs=opus',
       },
       { presence: 'recording', delay: data?.delay },
-      isIntegration,
     );
   }
 
@@ -3324,35 +3309,37 @@ export class BaileysStartupService extends ChannelStartupService {
       throw new BadRequestException('Maximum of 3 buttons allowed');
     }
 
-    const buttons = data.action.buttons.map((btn: InteractiveButton) => {
-      if (btn.type === 'reply') {
-        return {
-          name: 'quick_reply',
-          buttonParamsJson: JSON.stringify({
-            display_text: btn.reply?.title,
-            id: btn.reply?.id || btn.reply?.title,
-          }),
-        };
-      } else if (btn.type === 'url') {
-        return {
-          name: 'cta_url',
-          buttonParamsJson: JSON.stringify({
-            display_text: btn.url?.title,
-            url: btn.url?.url,
-            merchant_url: btn.url?.url,
-          }),
-        };
-      } else if (btn.type === 'copy') {
-        return {
-          name: 'cta_copy',
-          buttonParamsJson: JSON.stringify({
-            display_text: btn.copy?.title,
-            copy_code: btn.copy?.copyCode,
-          }),
-        };
-      }
-      return null;
-    }).filter(Boolean);
+    const buttons = data.action.buttons
+      .map((btn: InteractiveButton) => {
+        if (btn.type === 'reply') {
+          return {
+            name: 'quick_reply',
+            buttonParamsJson: JSON.stringify({
+              display_text: btn.reply?.title,
+              id: btn.reply?.id || btn.reply?.title,
+            }),
+          };
+        } else if (btn.type === 'url') {
+          return {
+            name: 'cta_url',
+            buttonParamsJson: JSON.stringify({
+              display_text: btn.url?.title,
+              url: btn.url?.url,
+              merchant_url: btn.url?.url,
+            }),
+          };
+        } else if (btn.type === 'copy') {
+          return {
+            name: 'cta_copy',
+            buttonParamsJson: JSON.stringify({
+              display_text: btn.copy?.title,
+              copy_code: btn.copy?.copyCode,
+            }),
+          };
+        }
+        return null;
+      })
+      .filter(Boolean);
 
     const message: proto.IMessage = {
       viewOnceMessage: {
@@ -3381,18 +3368,12 @@ export class BaileysStartupService extends ChannelStartupService {
               : undefined,
             body: { text: data.body.text },
             footer: data.footer ? { text: data.footer.text } : undefined,
-            headerType: data.header
-              ? data.header.type === 'text'
-                ? 1
-                : data.header.media
-                  ? 4
-                  : undefined
-              : undefined,
+            headerType: data.header ? (data.header.type === 'text' ? 1 : data.header.media ? 4 : undefined) : undefined,
             nativeFlowMessage: {
               buttons,
               messageParamsJson: JSON.stringify({ from: 'api', templateId: v4() }),
             },
-          },
+          } as any,
         },
       },
     };
@@ -3411,6 +3392,7 @@ export class BaileysStartupService extends ChannelStartupService {
    * Uses WhatsApp Shopping API
    */
   public async productMessage(data: SendProductDto) {
+    const d = data as any;
     const productMessage: proto.IMessage = {
       productMessage: {
         product: {
@@ -3419,10 +3401,10 @@ export class BaileysStartupService extends ChannelStartupService {
         businessCatalogId: data.catalogId,
         ...(data.storefrontName && { storefrontName: data.storefrontName }),
         ...(data.sections && { productSections: data.sections }),
-        header: data.header,
-        body: data.body,
-        footer: data.footer,
-      },
+        header: d.header,
+        body: d.body,
+        footer: d.footer,
+      } as any,
     };
 
     return await this.sendMessageWithTyping(data.number, productMessage, {
@@ -3480,7 +3462,9 @@ export class BaileysStartupService extends ChannelStartupService {
             header: {
               hasMediaAttachment: !!data.header.media,
               title: data.header.text,
-              ...(data.header.media && { imageMessage: { url: data.header.media, mimetype: data.header.mimeType || 'image/jpeg' } }),
+              ...(data.header.media && {
+                imageMessage: { url: data.header.media, mimetype: data.header.mimeType || 'image/jpeg' },
+              }),
             },
             body: { text: data.body.text },
             footer: data.footer ? { text: data.footer.text } : undefined,

@@ -1,17 +1,7 @@
 import { RouterBroker } from '@api/abstract/abstract.router';
-import {
-  CreateCampaignDto,
-  SendCampaignDto,
-  ScheduleCampaignDto,
-} from '@api/dto/campaign.dto';
+import { CreateCampaignDto, ScheduleCampaignDto, SendCampaignDto } from '@api/dto/campaign.dto';
 import { campaignController } from '@api/server.module';
-import {
-  cancelCampaignSchema,
-  campaignStatusSchema,
-  createCampaignSchema,
-  sendCampaignSchema,
-  scheduleCampaignSchema,
-} from '@validate/campaign.schema';
+import { createCampaignSchema, scheduleCampaignSchema, sendCampaignSchema } from '@validate/campaign.schema';
 import { RequestHandler, Router } from 'express';
 
 import { HttpStatus } from './index.router';
@@ -88,7 +78,7 @@ export class CampaignRouter extends RouterBroker {
       .delete(this.routerPath('delete/:campaignId'), ...guards, async (req, res) => {
         const { campaignId } = req.params;
         await campaignController.deleteCampaign(campaignId);
-        return res.status(HttpStatus.NO_CONTENT).json({ success: true });
+        return res.status(204).json({ success: true });
       });
   }
 }

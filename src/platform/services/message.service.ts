@@ -101,6 +101,6 @@ export class MessageService {
 
     const periodStart = this.getCurrentPeriodStart();
 
-    await this.usageService.recordUsage(command.accountId, 'messages', 1, periodStart);
+    await this.usageService.recordUsage(command.accountId, 'messages', 1, periodStart, command.appId);
   }
 }

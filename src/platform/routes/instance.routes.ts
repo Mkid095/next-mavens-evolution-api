@@ -8,14 +8,8 @@ import { tenantResolveMiddleware } from '../middleware/tenant-resolve.middleware
 import { platformRepository } from '../repository/platform.repository';
 import { AuditService } from '../services/audit.service';
 import { InstanceService } from '../services/instance.service';
+import { PlatformTenant } from '../types/platform-tenant';
 import { getSessionService } from './auth.routes';
-
-interface PlatformTenant {
-  accountId: string;
-  publicId: string;
-  status: string;
-  plan: { planId: string; name: string; monthlyMessageLimit: number | null };
-}
 
 const router: Router = Router();
 const auditService = new AuditService();
@@ -36,9 +30,9 @@ function toInstanceDTO(row: {
   createdAt: Date;
 }) {
   return {
-    id: row.publicId,        // external-facing id is the publicId
-    internalId: row.id,      // engine CUID, used by internal routes
-    publicId: row.publicId,  // explicit for clarity in the dashboard
+    id: row.publicId, // external-facing id is the publicId
+    internalId: row.id, // engine CUID, used by internal routes
+    publicId: row.publicId, // explicit for clarity in the dashboard
     name: row.name,
     status: row.status,
     phoneNumber: row.phoneNumber,
@@ -146,7 +140,7 @@ router.post(
       // or-create the Evolution row against a private member variable
       // that doesn't exist on waMonitor (silent failure → no QR).
       const instanceService = new InstanceService();
-      const instance = await instanceService.create(platformTenant.accountId, name);
+      const instance = await instanceService.create(platformTenant.accountId, name, platformTenant.defaultApp.id);
 
       await auditService.record(platformTenant.accountId, 'INSTANCE_CREATE', {
         type: 'instance',

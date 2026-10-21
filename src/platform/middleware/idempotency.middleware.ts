@@ -1,6 +1,10 @@
-import { Request, Response, NextFunction } from 'express';
-import { IdempotencyService } from '../services/idempotency.service';
 import { Logger } from '@config/logger.config';
+import crypto from 'crypto';
+import { NextFunction, Request, Response } from 'express';
+
+import { platformRepository } from '../repository/platform.repository';
+import { IdempotencyService } from '../services/idempotency.service';
+import { PlatformTenant } from '../types/platform-tenant';
 
 interface PlatformKeyInfo {
   accountId: string;
@@ -8,17 +12,17 @@ interface PlatformKeyInfo {
   scopes: string[];
 }
 
-interface PlatformTenantInfo {
-  accountId: string;
-  publicId: string;
-  status: string;
-  plan: { planId: string; name: string };
-}
+/**
+ * The shared tenant type is a superset of the fields this middleware
+ * reads — the alias is kept so the request interface below stays short.
+ */
+type PlatformTenantInfo = PlatformTenant;
 
 interface IdempotentRequest extends Request {
   platformKey?: PlatformKeyInfo;
   platformTenant?: PlatformTenantInfo;
   idempotencyKey?: string;
+  _idemReqId?: string;
 }
 
 /**
@@ -68,12 +72,10 @@ export class IdempotencyMiddleware {
 
     try {
       const requestHash = this.idempotencyService.hashRequest(req.method, req.path, req.body);
-      const result = await this.idempotencyService.checkIdempotency(
-        accountId,
-        apiKeyId,
-        idempotencyKey,
-        requestHash,
-      );
+      const reqId = ((req as IdempotentRequest)._idemReqId ??= crypto.randomBytes(4).toString('hex'));
+      this.logger.debug(`[IdempotencyCheck][${reqId}] ${idempotencyKey}`);
+      const result = await this.idempotencyService.checkIdempotency(accountId, apiKeyId, idempotencyKey, requestHash);
+      console.log(`[IdempotencyCheck][${reqId}] result:`, result.status);
 
       if (result.status === 'COMPLETED') {
         // Return cached response (replay)
@@ -123,27 +125,49 @@ export class IdempotencyMiddleware {
   /**
    * Complete an idempotency record after response is sent.
    * Called by route handlers after successful mutation.
+   * Returns a Promise so callers can await the PostgreSQL write before sending response.
    */
-  public complete = (
+  public complete = async (
     req: IdempotentRequest,
     res: Response,
     responseBody: unknown,
     resourceId?: string,
-  ): void => {
+  ): Promise<void> => {
     const idempotencyKey = req.idempotencyKey;
     const accountId = req.platformKey?.accountId;
     const apiKeyId = req.platformKey?.apiKeyId;
-
     if (!idempotencyKey || !accountId || !apiKeyId) {
       return;
     }
 
-    // Fire and forget — idempotency completion should not block the response
-    this.idempotencyService
-      .markCompleted(accountId, apiKeyId, idempotencyKey, responseBody, resourceId)
-      .catch((error) => {
-        this.logger.error(`Idempotency completion error: ${error}`);
+    try {
+      const requestHash = this.idempotencyService.hashRequest(req.method, req.path, req.body);
+      const existing = await platformRepository.platformIdempotencyRecord.findFirst({
+        where: { accountId, apiKeyId, idempotencyKey },
       });
+
+      if (existing?.status === 'COMPLETED') {
+        if (existing.requestHash !== requestHash) {
+          // Same idempotency key but different request — CONFLICT
+          if (!res.headersSent) {
+            res.status(409).json({
+              error: 'IDEMPOTENCY_CONFLICT',
+              message: 'Idempotency key already used with a different request body',
+            });
+          }
+          return;
+        }
+        // Same request — return the cached response (replay)
+        if (!res.headersSent) {
+          res.status(200).json(existing.response);
+        }
+        return;
+      }
+
+      await this.idempotencyService.markCompleted(accountId, apiKeyId, idempotencyKey, responseBody, resourceId);
+    } catch (error) {
+      this.logger.error(`Idempotency completion error: ${error}`);
+    }
   };
 }
 

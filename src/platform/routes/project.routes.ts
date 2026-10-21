@@ -1,31 +1,33 @@
-import { Router, Request, Response } from 'express';
-import { projectService } from '../services/project.service';
-import { appService } from '../services/app.service';
-import { platformRepository } from '../repository/platform.repository';
+import { Request, Response, Router } from 'express';
+
+import { idempotencyMiddleware } from '../middleware/idempotency.middleware';
 import { platformAuthMiddleware } from '../middleware/platform-auth.middleware';
 import { tenantResolveMiddleware } from '../middleware/tenant-resolve.middleware';
-import { idempotencyMiddleware } from '../middleware/idempotency.middleware';
+import { platformRepository } from '../repository/platform.repository';
+import { appService } from '../services/app.service';
 import { AuditService } from '../services/audit.service';
-
-interface PlatformTenant {
-  accountId: string;
-  publicId: string;
-  status: string;
-  plan: { planId: string; name: string; monthlyMessageLimit: number | null };
-}
+import { projectService } from '../services/project.service';
+import { PlatformTenant } from '../types/platform-tenant';
 
 const router: Router = Router();
 const auditService = new AuditService();
 
 /**
- * Resolve the appId the caller wants to scope to. Priority:
- *  1. X-App-Id header (set by frontend when an app is selected)
- *  2. ?appPublicId query param
- *  3. Body.appPublicId (for POSTs)
- *  4. Default app for the account (auto-created on first request)
+ * Resolve the internal app id (cuid) the caller wants to scope to.
  *
- * Returns the app's internal id (cuid) for use in queries. Throws 400
- * if the supplied publicId is not found in the tenant.
+ * Behaviour:
+ *  - When `publicId` is supplied, the app is looked up by its public id
+ *    scoped to the authenticated tenant's account. If no such app exists
+ *    an error with status 404 (`APP_NOT_FOUND`) is thrown.
+ *  - When `publicId` is omitted, the account's default app is resolved
+ *    (and lazily created, together with its default project, on first use).
+ *
+ * This helper does NOT read the `X-App-Id` header — the caller decides
+ * which app public id to pass in. Note that this function is currently
+ * unused by any route in this file; the tenant middleware resolves the
+ * scoped app for the request instead.
+ *
+ * Returns the app's internal id (cuid) for use in queries.
  */
 async function resolveAppId(req: Request, publicId: string | undefined): Promise<string> {
   const tenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
@@ -206,10 +208,15 @@ router.post(
       res.status(404).json({ error: 'PROJECT_NOT_FOUND' });
       return;
     }
-    await auditService.record(tenant.accountId, 'APP_CREATE', {
-      type: 'app',
-      id: app.publicId,
-    }, { projectId: req.params.projectPublicId });
+    await auditService.record(
+      tenant.accountId,
+      'APP_CREATE',
+      {
+        type: 'app',
+        id: app.publicId,
+      },
+      { projectId: req.params.projectPublicId },
+    );
     idempotencyMiddleware.complete(req, res, toAppDTO(app), app.publicId);
     res.status(201).json(toAppDTO(app));
   },

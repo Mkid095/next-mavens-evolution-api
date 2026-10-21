@@ -13,6 +13,8 @@ import { join } from 'path';
 
 import { CacheService } from './cache.service';
 
+type ChatwootConfig = any;
+
 export class WAMonitoringService {
   constructor(
     private readonly eventEmitter: EventEmitter2,
@@ -262,6 +264,56 @@ export class WAMonitoringService {
     }
   }
 
+  /**
+   * Initialize a single instance into waInstances.
+   * Used by Phase 2 EvolutionAdapter to connect a PlatformInstance to its engine socket.
+   * Returns the initialized service or null if initialization fails.
+   */
+  public async initializeInstance(instanceData: InstanceDto): Promise<any> {
+    // Check for existing socket first — reuse if already connected
+    const existing = this.waInstances[instanceData.instanceName];
+    if (existing?.stateConnection?.state === 'open') {
+      return existing;
+    }
+
+    // If stale entry exists, close it before replacing
+    if (existing) {
+      try {
+        await existing.logoutInstance();
+      } catch {
+        // ignore close errors on stale entries
+      }
+    }
+
+    const instance = channelController.init(instanceData, {
+      configService: this.configService,
+      eventEmitter: this.eventEmitter,
+      prismaRepository: this.prismaRepository,
+      cache: this.cache,
+      baileysCache: this.baileysCache,
+      providerFiles: this.providerFiles,
+    });
+
+    if (!instance) return null;
+
+    instance.setInstance({
+      instanceId: instanceData.instanceId,
+      instanceName: instanceData.instanceName,
+      integration: instanceData.integration,
+      token: instanceData.token,
+      number: instanceData.number,
+      businessId: instanceData.businessId,
+      ownerJid: instanceData.ownerJid,
+    });
+
+    if (instanceData.connectionStatus === 'open' || instanceData.connectionStatus === 'connecting') {
+      await instance.connectToWhatsapp();
+    }
+
+    this.waInstances[instanceData.instanceName] = instance;
+    return instance;
+  }
+
   private async setInstance(instanceData: InstanceDto) {
     const instance = channelController.init(instanceData, {
       configService: this.configService,
@@ -405,7 +457,7 @@ export class WAMonitoringService {
 
         this.clearDelInstanceTime(instanceName);
 
-        if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED) {
+        if (this.configService.get<ChatwootConfig>('CHATWOOT').ENABLED) {
           this.waInstances[instanceName]?.clearCacheChatwoot();
         }
 

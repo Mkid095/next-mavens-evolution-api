@@ -1,6 +1,7 @@
-import { Request, Response, NextFunction } from 'express';
-import { PlatformAuthService } from '../services/platform-auth.service';
 import { Logger } from '@config/logger.config';
+import { NextFunction, Request, Response } from 'express';
+
+import { PlatformAuthService } from '../services/platform-auth.service';
 
 /**
  * Platform Auth Middleware
@@ -19,6 +20,13 @@ export class PlatformAuthMiddleware {
    * Attaches { accountId, apiKeyId, scopes } to request if valid.
    */
   public authenticate = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    // Pass through if already authenticated by hybrid auth (session cookie already set platformKey)
+    const existing = (req as Request & { platformKey?: unknown }).platformKey;
+    if (existing) {
+      next();
+      return;
+    }
+
     const apiKey = req.headers['x-api-key'] as string | undefined;
 
     if (!apiKey) {
@@ -80,14 +88,15 @@ export class PlatformAuthMiddleware {
    */
   public requireScope = (...requiredScopes: string[]) => {
     return (req: Request, res: Response, next: NextFunction): void => {
-      const platformKey = (req as Request & { platformKey?: { accountId: string; apiKeyId: string; scopes: string[] } }).platformKey;
+      const platformKey = (req as Request & { platformKey?: { accountId: string; apiKeyId: string; scopes: string[] } })
+        .platformKey;
 
       if (!platformKey) {
         res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication required' });
         return;
       }
 
-      const hasScope = requiredScopes.some(scope => platformKey.scopes.includes(scope));
+      const hasScope = requiredScopes.some((scope) => platformKey.scopes.includes(scope));
       if (!hasScope) {
         res.status(403).json({ error: 'FORBIDDEN', message: `Required scope: ${requiredScopes.join(' or ')}` });
         return;

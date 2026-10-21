@@ -1,3 +1,4 @@
+// @ts-expect-error Constructor is a legacy helper that is not exported by integration.dto
 import { Constructor } from '@api/integrations/integration.dto';
 import { JsonValue } from '@prisma/client/runtime/library';
 
@@ -48,6 +49,7 @@ export class EventDto {
 }
 
 export function EventInstanceMixin<TBase extends Constructor>(Base: TBase) {
+  // @ts-expect-error the mixin class type is not assignable to the base constructor type
   return class extends Base {
     webhook?: {
       enabled?: boolean;

@@ -56,8 +56,11 @@ export class InstanceService {
    *    events find a target channel immediately
    *
    * If the Evolution row already exists (very rare), we reuse it.
+   *
+   * `appId` is the internal PlatformApp id (cuid) the instance is
+   * scoped to — the `appId` column is NOT NULL in the database.
    */
-  async create(accountId: string, name: string): Promise<PlatformInstanceDomain> {
+  async create(accountId: string, name: string, appId: string): Promise<PlatformInstanceDomain> {
     const publicId = `inst_${crypto.randomBytes(8).toString('hex')}`;
 
     // 1) Pre-create the Evolution Instance row (in the engine's DB)
@@ -70,9 +73,22 @@ export class InstanceService {
           name,
           integration: Integration.WHATSAPP_BAILEYS,
           connectionStatus: 'close',
+          // Links the engine row to its owning account. The webhook route
+          // checks this column to prove the caller owns the instance.
+          platformAccountId: accountId,
         },
       });
       this.logger.log(`Created Evolution Instance id=${evolutionInstance.id} name=${name}`);
+    } else if (!evolutionInstance.platformAccountId) {
+      // Reusing a row created before this column was populated — claim it
+      // for the account creating the canonical row.
+      evolutionInstance = await prismaRepository.instance.update({
+        where: { id: evolutionInstance.id },
+        data: { platformAccountId: accountId },
+      });
+      this.logger.log(
+        `Claimed existing Evolution Instance id=${evolutionInstance.id} name=${name} for account ${accountId}`,
+      );
     } else {
       this.logger.log(`Reusing existing Evolution Instance id=${evolutionInstance.id} name=${name}`);
     }
@@ -82,6 +98,7 @@ export class InstanceService {
       data: {
         publicId,
         accountId,
+        appId,
         name,
         status: 'CREATED',
         capabilities: [],
@@ -89,7 +106,7 @@ export class InstanceService {
     });
 
     this.logger.log(
-      `Created PlatformInstance ${publicId} (Evolution id=${evolutionInstance.id}) for account ${accountId}`,
+      `Created PlatformInstance ${publicId} (Evolution id=${evolutionInstance.id}) for account ${accountId} app ${appId}`,
     );
     return instance;
   }

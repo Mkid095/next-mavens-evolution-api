@@ -25,6 +25,7 @@ import { PlatformAuthService } from '../services/platform-auth.service';
 import { SubscriptionService } from '../services/subscription.service';
 import { UsageService } from '../services/usage.service';
 import { WebhookService } from '../services/webhook.service';
+import { PlatformTenant } from '../types/platform-tenant';
 import { getSessionService } from './auth.routes';
 
 // ─── Public API base ───────────────────────────────────────────────────────────
@@ -32,13 +33,6 @@ import { getSessionService } from './auth.routes';
 const PUBLIC_API_BASE = process.env.PUBLIC_API_BASE || 'https://whatsapp.nextmavens.com/api/v1';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-interface PlatformTenant {
-  accountId: string;
-  publicId: string;
-  status: string;
-  plan: { planId: string; name: string; monthlyMessageLimit: number | null };
-}
 
 interface JsonRpcError {
   code: number;
@@ -503,8 +497,16 @@ function getSubscriptionService(): SubscriptionService {
 /**
  * Check if the request's platformKey grants the required scopes for a tool.
  * Returns true if access is allowed, false otherwise.
+ *
+ * A dashboard session is a full, authenticated login for the account owner,
+ * so it is not scope-limited the way a personal access token is. Session
+ * requests carry no `scopes` on `platformKey` (see hybrid-auth.middleware),
+ * so without this branch every MCP tool would reject them with a 403.
  */
 function checkScopes(req: Request, tool: string): boolean {
+  const platformSession = (req as Request & { platformSession?: { sessionId: string } }).platformSession;
+  if (platformSession) return true;
+
   const platformKey = (req as Request & { platformKey?: { scopes?: string[] } }).platformKey;
   const grantedScopes: string[] = platformKey?.scopes ?? [];
   // Wildcard = full access
@@ -592,10 +594,15 @@ router.post(
       const latencyMs = Date.now() - startedAt;
       // Fire-and-forget audit + SSE publish so the dashboard can show a
       // live activity feed. We do not block the response on these.
-      void auditService.record(platformTenant.accountId, 'MCP_INVOKE', { type: 'mcp-tool', id: tool }, {
-        latencyMs,
-        toolParametersKeys: Object.keys(parameters ?? {}),
-      });
+      void auditService.record(
+        platformTenant.accountId,
+        'MCP_INVOKE',
+        { type: 'mcp-tool', id: tool },
+        {
+          latencyMs,
+          toolParametersKeys: Object.keys(parameters ?? {}),
+        },
+      );
       void publishMcpEvent(platformTenant.accountId, {
         tool,
         latencyMs,
@@ -605,9 +612,14 @@ router.post(
     } catch (error) {
       console.error(`[MCP] Tool "${tool}" error:`, error);
       const message = error instanceof Error ? error.message : 'Internal error';
-      void auditService.record(platformTenant.accountId, 'MCP_INVOKE_ERROR', { type: 'mcp-tool', id: tool }, {
-        error: message,
-      });
+      void auditService.record(
+        platformTenant.accountId,
+        'MCP_INVOKE_ERROR',
+        { type: 'mcp-tool', id: tool },
+        {
+          error: message,
+        },
+      );
       void publishMcpEvent(platformTenant.accountId, {
         tool,
         status: 'error',
@@ -716,7 +728,7 @@ async function handleTool(
         where: { accountId: tenant.accountId, name },
       });
       if (existing) return jsonRpcError(res, -32002, 'Instance with this name already exists', { name });
-      const domain = await instanceService.create(tenant.accountId, name);
+      const domain = await instanceService.create(tenant.accountId, name, tenant.defaultApp.id);
       await auditService.record(tenant.accountId, 'INSTANCE_CREATED', { type: 'instance', id: domain.publicId });
       return jsonRpcResult(res, {
         id: domain.publicId,
@@ -884,7 +896,7 @@ async function handleTool(
       const instance = await resolveInstance(instanceId, tenant.accountId);
       if (!instance) return jsonRpcError(res, -32004, 'Instance not found', { instanceId });
       const ws = getWebhookService();
-      const result = await ws.createWebhook(tenant.accountId, instance.id, url, events);
+      const result = await ws.createWebhook(tenant.accountId, instance.id, url, events, tenant.defaultApp.id);
       await auditService.record(tenant.accountId, 'WEBHOOK_CREATED', { type: 'webhook', id: result.publicId });
       return jsonRpcResult(res, {
         id: result.publicId,
@@ -988,6 +1000,7 @@ async function handleTool(
           id: k.publicId,
           name: k.name,
           scopes: k.scopes ?? [],
+          keyPrefix: k.keyPrefix ?? null,
           createdAt: k.createdAt.toISOString(),
           expiresAt: k.expiresAt?.toISOString() ?? null,
           lastUsedAt: k.lastUsedAt?.toISOString() ?? null,
@@ -1004,6 +1017,7 @@ async function handleTool(
         name,
         scopes ?? ['*'],
         expiresAt ? new Date(expiresAt) : undefined,
+        tenant.defaultApp.id,
       );
       await auditService.record(tenant.accountId, 'API_KEY_CREATED', { type: 'api_key', id: publicId });
       return jsonRpcResult(res, {

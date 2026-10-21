@@ -1,8 +1,9 @@
 import { CacheEngine } from '@cache/cacheengine';
 import { configService } from '@config/env.config';
-import { platformRepository } from '../repository/platform.repository';
 import { Logger } from '@config/logger.config';
 import crypto from 'crypto';
+
+import { platformRepository } from '../repository/platform.repository';
 
 /**
  * Idempotency Service
@@ -58,30 +59,26 @@ export class IdempotencyService {
     cachedResponse?: unknown;
     resourceId?: string;
   }> {
+    // Always query PostgreSQL as the authoritative store.
+    // Redis is used only as a PROCESSING fast-path to detect in-flight requests.
     const redisKey = this.scopedRedisKey(accountId, apiKeyId, idempotencyKey);
 
-    // Check Redis cache first (fast path)
     try {
       const engine = this.redis.getEngine();
       const cached = await engine.get(redisKey);
       if (cached) {
         const parsed = typeof cached === 'string' ? JSON.parse(cached) : cached;
-        if (parsed.status === 'COMPLETED' && parsed.requestHash === requestHash) {
-          return { status: 'COMPLETED', cachedResponse: parsed.response, resourceId: parsed.resourceId };
-        }
-        if (parsed.status === 'COMPLETED' && parsed.requestHash !== requestHash) {
-          return { status: 'CONFLICT' };
-        }
         if (parsed.status === 'PROCESSING') {
           return { status: 'PROCESSING' };
         }
+        // For COMPLETED entries, skip Redis and fall through to PostgreSQL
+        // to get the authoritative response and correct hash comparison.
       }
     } catch (error) {
       this.logger.warn(`Redis cache read error for ${redisKey}: ${error}`);
-      // Fall through to PostgreSQL
     }
 
-    // Check PostgreSQL authoritative record (scoped by accountId + apiKeyId + idempotencyKey)
+    // PostgreSQL authoritative record (scoped by accountId + apiKeyId + idempotencyKey)
     const record = await platformRepository.platformIdempotencyRecord.findFirst({
       where: { accountId, apiKeyId, idempotencyKey },
     });
@@ -91,8 +88,19 @@ export class IdempotencyService {
         // Re-cache in Redis for fast subsequent lookups
         try {
           const engine = this.redis.getEngine();
-          engine.set(redisKey, JSON.stringify({ status: 'COMPLETED', requestHash, response: record.response, resourceId: record.resourceId }), 3600);
-        } catch { /* ignore */ }
+          engine.set(
+            redisKey,
+            JSON.stringify({
+              status: 'COMPLETED',
+              requestHash,
+              response: record.response,
+              resourceId: record.resourceId,
+            }),
+            3600,
+          );
+        } catch {
+          /* ignore */
+        }
         return { status: 'COMPLETED', cachedResponse: record.response, resourceId: record.resourceId ?? undefined };
       }
       if (record.status === 'COMPLETED' && record.requestHash !== requestHash) {
@@ -123,7 +131,9 @@ export class IdempotencyService {
     try {
       const engine = this.redis.getEngine();
       engine.set(redisKey, JSON.stringify({ status: 'PROCESSING', requestHash }), 300);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
 
     // PostgreSQL: upsert with full scope (accountId + apiKeyId + idempotencyKey)
     // Uses the unique constraint to ensure atomic insert/update
@@ -163,7 +173,9 @@ export class IdempotencyService {
     try {
       const engine = this.redis.getEngine();
       engine.set(redisKey, JSON.stringify({ status: 'COMPLETED', response: responseBody, resourceId }), 3600);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
 
     await platformRepository.platformIdempotencyRecord.update({
       where: { accountId_apiKeyId_idempotencyKey: { accountId, apiKeyId, idempotencyKey } },

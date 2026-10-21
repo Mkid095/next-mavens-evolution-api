@@ -869,7 +869,7 @@ model PlatformApiKey {
   id         String    @id @default(cuid())
   publicId   String    @unique @db.VarChar(50)
   accountId  String
-  appId      String?
+  appId      String
   keyHash    String    @unique @db.VarChar(64)
   keyPrefix  String    @db.VarChar(16)
   name       String?   @db.VarChar(255)
@@ -880,7 +880,7 @@ model PlatformApiKey {
   createdAt  DateTime  @default(now()) @db.Timestamp
 
   account   PlatformAccount          @relation(fields: [accountId], references: [id])
-  app       PlatformApp?             @relation(fields: [appId], references: [id])
+  app       PlatformApp              @relation(fields: [appId], references: [id])
   instances PlatformApiKeyInstance[]
 
   @@index([accountId])
@@ -925,7 +925,7 @@ model PlatformMessageCommand {
   id             String       @id @default(cuid())
   idempotencyKey String       @db.VarChar(128)
   accountId      String
-  appId          String?
+  appId          String
   instanceId     String
   apiKeyId       String
   messageId      String       @db.VarChar(50)
@@ -940,8 +940,8 @@ model PlatformMessageCommand {
   expiresAt      DateTime?
   createdAt      DateTime     @default(now()) @db.Timestamp
   updatedAt      DateTime     @updatedAt
-  PlatformApp    PlatformApp? @relation(fields: [platformAppId], references: [id])
-  platformAppId  String?
+
+  app PlatformApp @relation(fields: [appId], references: [id])
 
   @@unique([accountId, instanceId, idempotencyKey])
   @@index([instanceId, status])
@@ -953,17 +953,17 @@ model PlatformWebhook {
   id         String   @id @default(cuid())
   publicId   String   @unique @db.VarChar(50)
   accountId  String
-  appId      String?
+  appId      String
   instanceId String
   url        String   @db.VarChar(500)
   events     Json     @default("[]")
-  secret     String   @db.VarChar(64)
+  secret     String   @db.VarChar(255)
   enabled    Boolean  @default(true)
   createdAt  DateTime @default(now()) @db.Timestamp
   updatedAt  DateTime @updatedAt
 
   account    PlatformAccount           @relation(fields: [accountId], references: [id])
-  app        PlatformApp?              @relation(fields: [appId], references: [id])
+  app        PlatformApp               @relation(fields: [appId], references: [id])
   deliveries PlatformWebhookDelivery[]
 
   @@index([accountId])
@@ -999,7 +999,7 @@ model PlatformInstance {
   id              String    @id @default(dbgenerated("gen_random_uuid()"))
   publicId        String    @unique @db.VarChar(50)
   accountId       String    @db.VarChar(255)
-  appId           String?   @db.VarChar(255)
+  appId           String    @db.VarChar(255)
   name            String    @db.VarChar(255)
   status          String    @default("CREATED")
   phoneNumber     String?   @db.VarChar(20)
@@ -1009,7 +1009,7 @@ model PlatformInstance {
   updatedAt       DateTime  @updatedAt
 
   account         PlatformAccount    @relation(fields: [accountId], references: [id])
-  app             PlatformApp?       @relation(fields: [appId], references: [id])
+  app             PlatformApp        @relation(fields: [appId], references: [id])
   lifecycleEvents InstanceEventLog[]
   contacts        PlatformContact[]
   groups          PlatformGroup[]
@@ -1039,7 +1039,7 @@ model PlatformContact {
   id              String    @id @default(dbgenerated("gen_random_uuid()"))
   publicId        String    @unique @db.VarChar(50)
   accountId       String    @db.VarChar(255)
-  appId           String?   @db.VarChar(255)
+  appId           String    @db.VarChar(255)
   instanceId      String    @db.VarChar(255)
   phoneNumber     String    @db.VarChar(20)
   displayName     String?
@@ -1049,7 +1049,7 @@ model PlatformContact {
   updatedAt       DateTime  @updatedAt
 
   account  PlatformAccount  @relation(fields: [accountId], references: [id])
-  app      PlatformApp?     @relation(fields: [appId], references: [id])
+  app      PlatformApp      @relation(fields: [appId], references: [id])
   instance PlatformInstance @relation(fields: [instanceId], references: [id])
 
   @@unique([accountId, phoneNumber])
@@ -1062,7 +1062,7 @@ model PlatformGroup {
   id               String   @id @default(dbgenerated("gen_random_uuid()"))
   publicId         String   @unique @db.VarChar(50)
   accountId        String   @db.VarChar(255)
-  appId            String?  @db.VarChar(255)
+  appId            String   @db.VarChar(255)
   instanceId       String   @db.VarChar(255)
   name             String   @db.VarChar(255)
   participantCount Int      @default(0)
@@ -1070,7 +1070,7 @@ model PlatformGroup {
   updatedAt        DateTime @updatedAt
 
   account    PlatformAccount          @relation(fields: [accountId], references: [id])
-  app        PlatformApp?             @relation(fields: [appId], references: [id])
+  app        PlatformApp              @relation(fields: [appId], references: [id])
   instance   PlatformInstance         @relation(fields: [instanceId], references: [id])
   engineRefs PlatformGroupEngineRef[]
 
@@ -1094,7 +1094,7 @@ model PlatformGroupEngineRef {
 model PlatformUsageRecord {
   id             String   @id @default(cuid())
   accountId      String
-  appId          String?
+  appId          String
   instanceId     String?
   operation      String   @db.VarChar(100)
   resource       String   @db.VarChar(50)
@@ -1106,12 +1106,26 @@ model PlatformUsageRecord {
   createdAt      DateTime @default(now()) @db.Timestamp
 
   account PlatformAccount @relation(fields: [accountId], references: [id])
-  app     PlatformApp?    @relation(fields: [appId], references: [id])
+  app     PlatformApp     @relation(fields: [appId], references: [id])
 
   @@index([accountId, periodStart])
   @@index([accountId, operation, periodStart])
   @@index([accountId, instanceId])
   @@index([appId])
+}
+
+/// Encrypted application settings.
+///
+/// Holds secrets that must survive a redeploy but must never appear in
+/// source control — currently the company gate password that protects
+/// account creation. `value` always holds AES-256-GCM ciphertext
+/// (`v1:<iv>:<authTag>:<ciphertext>`), never plaintext.
+model PlatformSetting {
+  key         String   @id @db.VarChar(100)
+  value       String   @db.Text
+  description String?  @db.VarChar(255)
+  createdAt   DateTime @default(now()) @db.Timestamp
+  updatedAt   DateTime @updatedAt
 }
 
 model PlatformAuditLog {

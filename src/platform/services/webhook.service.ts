@@ -1,6 +1,7 @@
-import crypto from 'crypto';
-import { platformRepository } from '../repository/platform.repository';
 import { Logger } from '@config/logger.config';
+import crypto from 'crypto';
+
+import { platformRepository } from '../repository/platform.repository';
 
 /**
  * Webhook Service
@@ -24,15 +25,19 @@ export class WebhookService {
    * Generates and encrypts a secret using AES-256-GCM.
    * The encrypted secret is stored in the `secret` field.
    * Plaintext secret is returned ONLY at creation time.
+   *
+   * `appId` is the internal PlatformApp id (cuid) the webhook is scoped
+   * to — the `appId` column is NOT NULL in the database.
    */
   public async createWebhook(
     accountId: string,
     instanceId: string,
     url: string,
     events: string[],
+    appId: string,
   ): Promise<{
     publicId: string; // wh_xxx — the only ID exposed to clients
-    secret: string;   // Plaintext secret (only time visible — must be saved by caller)
+    secret: string; // Plaintext secret (only time visible — must be saved by caller)
     url: string;
     events: string[];
     instanceId: string;
@@ -45,6 +50,7 @@ export class WebhookService {
       data: {
         publicId,
         accountId,
+        appId,
         instanceId,
         url,
         events,

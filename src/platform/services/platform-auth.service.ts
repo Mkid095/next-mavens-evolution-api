@@ -1,15 +1,23 @@
-import crypto from 'crypto';
-import { platformRepository } from '../repository/platform.repository';
 import { Logger } from '@config/logger.config';
+import crypto from 'crypto';
+
+import { platformRepository } from '../repository/platform.repository';
 
 export class PlatformAuthService {
   private readonly logger = new Logger('PlatformAuthService');
 
+  /**
+   * Create an API key for an account.
+   *
+   * `appId` is the internal PlatformApp id (cuid) the key is scoped to —
+   * the `appId` column is NOT NULL in the database.
+   */
   public async createApiKey(
     accountId: string,
     name: string,
     scopes: string[],
-    expiresAt?: Date,
+    expiresAt: Date | undefined,
+    appId: string,
   ): Promise<{ publicId: string; plaintextKey: string }> {
     const publicId = `key_${crypto.randomBytes(12).toString('hex')}`;
     const plaintextKey = `fidscript_sk_${crypto.randomBytes(32).toString('hex')}`;
@@ -20,6 +28,7 @@ export class PlatformAuthService {
       data: {
         publicId,
         accountId,
+        appId,
         name,
         keyHash,
         keyPrefix,
@@ -38,9 +47,7 @@ export class PlatformAuthService {
    * Returns the key record's internal id, publicId, accountId, scopes, and expiry.
    * Returns null if the key is invalid, revoked, or expired.
    */
-  public async validateApiKey(
-    plaintextKey: string,
-  ): Promise<{
+  public async validateApiKey(plaintextKey: string): Promise<{
     id: string;
     publicId: string;
     accountId: string;
@@ -82,6 +89,7 @@ export class PlatformAuthService {
       `${existing.name} (rotated)`,
       existing.scopes as string[],
       existing.expiresAt ?? undefined,
+      existing.appId,
     );
     return { plaintextKey };
   }
@@ -121,6 +129,7 @@ export class PlatformAuthService {
         id: true,
         publicId: true,
         name: true,
+        keyPrefix: true,
         scopes: true,
         createdAt: true,
         expiresAt: true,

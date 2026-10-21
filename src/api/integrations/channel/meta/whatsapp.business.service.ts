@@ -47,6 +47,7 @@ export class BusinessStartupService extends ChannelStartupService {
 
   public phoneNumber: string;
   public mobile: boolean;
+  public openaiService?: any;
 
   public get connectionStatus() {
     return this.stateConnection;
@@ -897,7 +898,7 @@ export class BusinessStartupService extends ChannelStartupService {
     }
   }
 
-  protected async sendMessageWithTyping(number: string, message: any, options?: Options, isIntegration = false) {
+  protected async sendMessageWithTyping(number: string, message: any, options?: Options) {
     try {
       let quoted: any;
       let webhookUrl: any;
@@ -1118,7 +1119,7 @@ export class BusinessStartupService extends ChannelStartupService {
   }
 
   // Send Message Controller
-  public async textMessage(data: SendTextDto, isIntegration = false) {
+  public async textMessage(data: SendTextDto) {
     const res = await this.sendMessageWithTyping(
       data.number,
       {
@@ -1132,7 +1133,6 @@ export class BusinessStartupService extends ChannelStartupService {
         mentionsEveryOne: data?.mentionsEveryOne,
         mentioned: data?.mentioned,
       },
-      isIntegration,
     );
     return res;
   }
@@ -1229,7 +1229,7 @@ export class BusinessStartupService extends ChannelStartupService {
     }
   }
 
-  public async mediaMessage(data: SendMediaDto, file?: any, isIntegration = false) {
+  public async mediaMessage(data: SendMediaDto, file?: any) {
     const mediaData: SendMediaDto = { ...data };
 
     if (file) mediaData.media = file.buffer.toString('base64');
@@ -1247,7 +1247,6 @@ export class BusinessStartupService extends ChannelStartupService {
         mentionsEveryOne: data?.mentionsEveryOne,
         mentioned: data?.mentioned,
       },
-      isIntegration,
     );
 
     return mediaSent;
@@ -1333,7 +1332,7 @@ export class BusinessStartupService extends ChannelStartupService {
     }
   }
 
-  public async audioWhatsapp(data: SendAudioDto, file?: any, isIntegration = false) {
+  public async audioWhatsapp(data: SendAudioDto, file?: any) {
     const message = await this.processAudio(data.audio, data.number, file);
 
     const audioSent = await this.sendMessageWithTyping(
@@ -1347,7 +1346,6 @@ export class BusinessStartupService extends ChannelStartupService {
         mentionsEveryOne: data?.mentionsEveryOne,
         mentioned: data?.mentioned,
       },
-      isIntegration,
     );
 
     return audioSent;
@@ -1453,7 +1451,7 @@ export class BusinessStartupService extends ChannelStartupService {
     });
   }
 
-  public async templateMessage(data: SendTemplateDto, isIntegration = false) {
+  public async templateMessage(data: SendTemplateDto) {
     const res = await this.sendMessageWithTyping(
       data.number,
       {
@@ -1472,7 +1470,6 @@ export class BusinessStartupService extends ChannelStartupService {
         mentioned: data?.mentioned,
         webhookUrl: data?.webhookUrl,
       },
-      isIntegration,
     );
     return res;
   }

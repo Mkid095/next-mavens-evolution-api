@@ -7,6 +7,11 @@ CORS="http://localhost:3000"
 TS=$(date +%s)
 PASS=0; FAIL=0
 
+# Gate password for account creation (POST /platform/onboard and
+# POST /platform/auth/signup). Override with COMPANY_GATE_PASSWORD in the
+# environment; it must match the API's own value.
+COMPANY_GATE_PASSWORD="${COMPANY_GATE_PASSWORD:-COMPANY_GATE_PASSWORD_PLACEHOLDER}"
+
 pass() { echo "  ✅ $1"; ((PASS++)); }
 fail() { echo "  ❌ $1"; ((FAIL++)); }
 header() { echo ""; echo "=== $1 ==="; }
@@ -31,7 +36,7 @@ ALICE_EMAIL="alice+${TS}@testcorp.io"
 BOB_EMAIL="bob+${TS}@othercorp.io"
 
 ONBOARD=$(curl -s -X POST -H "Origin: $CORS" -H "Content-Type: application/json" \
-  -d '{"email":"'"$ALICE_EMAIL"'","name":"TestCorp"}' "$BASE/platform/onboard")
+  -d '{"email":"'"$ALICE_EMAIL"'","name":"TestCorp","password":"TestCorp123!","companyPassword":"'"$COMPANY_GATE_PASSWORD"'"}' "$BASE/platform/onboard")
 ACCOUNT_ID=$(json_get "$ONBOARD" "account.id")
 API_KEY=$(json_get "$ONBOARD" "apiKey")
 
@@ -39,7 +44,7 @@ API_KEY=$(json_get "$ONBOARD" "apiKey")
 [[ "$API_KEY" == fidscript_sk_* ]] && pass "API key uses fidscript_sk_ prefix" || fail "Bad API key"
 
 ONBOARD2=$(curl -s -X POST -H "Origin: $CORS" -H "Content-Type: application/json" \
-  -d '{"email":"'"$BOB_EMAIL"'","name":"OtherCorp"}' "$BASE/platform/onboard")
+  -d '{"email":"'"$BOB_EMAIL"'","name":"OtherCorp","password":"OtherCorp123!","companyPassword":"'"$COMPANY_GATE_PASSWORD"'"}' "$BASE/platform/onboard")
 ACCOUNT2_ID=$(json_get "$ONBOARD2" "account.id")
 API_KEY2=$(json_get "$ONBOARD2" "apiKey")
 [[ -n "$ACCOUNT2_ID" ]] && pass "Bob's account created: $ACCOUNT2_ID" || fail "Bob account failed"

@@ -1,17 +1,12 @@
+import { Logger } from '@config/logger.config';
 import { Request, Response, Router } from 'express';
 import { createClient, RedisClientType } from 'redis';
+
 import { hybridAuth } from '../middleware/hybrid-auth.middleware';
 import { tenantResolveMiddleware } from '../middleware/tenant-resolve.middleware';
-import { getSessionService } from './auth.routes';
 import { platformRepository } from '../repository/platform.repository';
-import { Logger } from '@config/logger.config';
-
-interface PlatformTenant {
-  accountId: string;
-  publicId: string;
-  status: string;
-  plan: { planId: string; name: string; monthlyMessageLimit: number | null };
-}
+import { PlatformTenant } from '../types/platform-tenant';
+import { getSessionService } from './auth.routes';
 
 const router: Router = Router();
 const logger = new Logger('ActivityRoute');
@@ -139,7 +134,7 @@ router.get(
       await subscriber.subscribe(channel, (message) => {
         if (cancelled) return;
         try {
-          const data = JSON.parse(message) as Record<string, unknown>;
+          JSON.parse(message);
           res.write(`event: activity\ndata: ${message}\n\n`);
           res.flush();
         } catch {

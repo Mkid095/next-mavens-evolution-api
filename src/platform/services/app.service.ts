@@ -1,6 +1,7 @@
-import crypto from 'crypto';
-import { platformRepository } from '../repository/platform.repository';
 import { Logger } from '@config/logger.config';
+import crypto from 'crypto';
+
+import { platformRepository } from '../repository/platform.repository';
 import { projectService } from './project.service';
 
 /**
@@ -13,11 +14,13 @@ export class AppService {
   private readonly logger = new Logger('AppService');
 
   private slugify(name: string): string {
-    return name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 56) || 'app';
+    return (
+      name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 56) || 'app'
+    );
   }
 
   private randomSuffix(): string {
@@ -69,23 +72,51 @@ export class AppService {
   /**
    * Resolve the default app for an account. Used by tenant-resolve
    * when no X-App-Id header is provided.
+   *
+   * NOTE: the row is written directly (NOT through `create()`) because
+   * `create()` derives the slug from the name via `slugify()`, which
+   * would produce `default-app` instead of the literal `default` slug
+   * this lookup expects — causing a new project+app pair to be created
+   * on every call.
    */
   async resolveDefault(accountId: string) {
-    let app = await platformRepository.platformApp.findFirst({
+    const existing = await platformRepository.platformApp.findFirst({
       where: { accountId, slug: 'default' },
       include: { project: true },
     });
-    if (app) return app;
+    if (existing) return existing;
+
     // Lazy-create the default project + app if missing.
     const project = await projectService.resolveDefault(accountId);
-    return this.create(accountId, project.publicId, { name: 'Default App' });
+
+    try {
+      return await platformRepository.platformApp.create({
+        data: {
+          id: `a_${crypto.randomBytes(8).toString('hex')}`,
+          publicId: `app_${crypto.randomBytes(8).toString('hex')}`,
+          accountId,
+          projectId: project.id,
+          name: 'Default App',
+          slug: 'default',
+          description: null,
+          status: 'ACTIVE',
+        },
+        include: { project: true },
+      });
+    } catch (error) {
+      // UNIQUE(projectId, slug) — a concurrent request won the race.
+      if ((error as { code?: string })?.code === 'P2002') {
+        const raced = await platformRepository.platformApp.findFirst({
+          where: { accountId, slug: 'default' },
+          include: { project: true },
+        });
+        if (raced) return raced;
+      }
+      throw error;
+    }
   }
 
-  async create(
-    accountId: string,
-    projectPublicId: string,
-    input: { name: string; description?: string },
-  ) {
+  async create(accountId: string, projectPublicId: string, input: { name: string; description?: string }) {
     const project = await platformRepository.platformProject.findFirst({
       where: { publicId: projectPublicId, accountId },
       select: { id: true },
@@ -108,11 +139,7 @@ export class AppService {
     });
   }
 
-  async rename(
-    accountId: string,
-    appPublicId: string,
-    input: { name?: string; description?: string },
-  ) {
+  async rename(accountId: string, appPublicId: string, input: { name?: string; description?: string }) {
     const app = await this.get(accountId, appPublicId);
     if (!app) return null;
     const data: Record<string, unknown> = {};

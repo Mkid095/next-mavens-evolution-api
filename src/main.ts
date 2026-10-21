@@ -47,6 +47,10 @@ async function bootstrap() {
   app.use(
     cors({
       origin(requestOrigin, callback) {
+        // Allow requests with no Origin header (same-origin, CLI, etc.)
+        if (!requestOrigin) {
+          return callback(null, true);
+        }
         const { ORIGIN } = configService.get<Cors>('CORS');
         if (ORIGIN.includes('*')) {
           return callback(null, true);

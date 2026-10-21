@@ -1,14 +1,10 @@
+import { CreateCampaignDto, ScheduleCampaignDto, SendCampaignDto } from '@api/dto/campaign.dto';
+import { InstanceDto } from '@api/dto/instance.dto';
 import { AntiBanService } from '@api/services/anti-ban.service';
 import { CampaignService } from '@api/services/campaign.service';
-import { InstanceDto } from '@api/dto/instance.dto';
-import {
-  CreateCampaignDto,
-  SendCampaignDto,
-  ScheduleCampaignDto,
-} from '@api/dto/campaign.dto';
 import { WAMonitoringService } from '@api/services/monitor.service';
-import { BadRequestException } from '@exceptions';
 import { Logger } from '@config/logger.config';
+import { BadRequestException } from '@exceptions';
 
 export class CampaignController {
   private readonly logger = new Logger('CampaignController');
@@ -131,7 +127,7 @@ export class CampaignController {
           results.blocked++;
         }
 
-        this.logger.error(`Failed to send to ${recipient.phone}:`, error);
+        (this.logger.error as any)(`Failed to send to ${recipient.phone}:`, error);
       }
     }
 
@@ -142,10 +138,7 @@ export class CampaignController {
     };
   }
 
-  private prepareMessageWithVariables(
-    message: SendCampaignDto['message'],
-    variables?: Record<string, string>,
-  ): any {
+  private prepareMessageWithVariables(message: SendCampaignDto['message'], variables?: Record<string, string>): any {
     if (!variables) return {};
 
     const result: any = {};

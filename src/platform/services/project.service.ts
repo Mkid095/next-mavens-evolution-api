@@ -1,6 +1,7 @@
-import crypto from 'crypto';
-import { platformRepository } from '../repository/platform.repository';
 import { Logger } from '@config/logger.config';
+import crypto from 'crypto';
+
+import { platformRepository } from '../repository/platform.repository';
 
 /**
  * Service for PlatformProject CRUD.
@@ -13,11 +14,13 @@ export class ProjectService {
 
   /** Generate a URL-safe slug from a project name. */
   private slugify(name: string): string {
-    return name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 56) || 'project';
+    return (
+      name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 56) || 'project'
+    );
   }
 
   /** Random 6-char suffix for slug disambiguation. */
@@ -62,15 +65,41 @@ export class ProjectService {
    * Resolve the default project for an account (slug = 'default').
    * Created on-demand if missing — used by the tenant-resolve
    * middleware as a back-compat fallback.
+   *
+   * NOTE: the row is written directly (NOT through `create()`) because
+   * `create()` derives the slug from the name via `slugify()`, which
+   * would produce `default-project` instead of the literal `default`
+   * slug this lookup expects — causing a new project+app pair to be
+   * created on every call.
    */
   async resolveDefault(accountId: string) {
-    let project = await platformRepository.platformProject.findFirst({
+    const existing = await platformRepository.platformProject.findFirst({
       where: { accountId, slug: 'default' },
     });
-    if (project) return project;
-    // Lazy-create: this is safe because every existing account was
-    // already given a default project by the migration backfill.
-    return this.create(accountId, { name: 'Default Project' });
+    if (existing) return existing;
+
+    try {
+      return await platformRepository.platformProject.create({
+        data: {
+          id: `p_${crypto.randomBytes(8).toString('hex')}`,
+          publicId: `proj_${crypto.randomBytes(8).toString('hex')}`,
+          accountId,
+          name: 'Default Project',
+          slug: 'default',
+          description: null,
+          status: 'ACTIVE',
+        },
+      });
+    } catch (error) {
+      // UNIQUE(accountId, slug) — a concurrent request won the race.
+      if ((error as { code?: string })?.code === 'P2002') {
+        const raced = await platformRepository.platformProject.findFirst({
+          where: { accountId, slug: 'default' },
+        });
+        if (raced) return raced;
+      }
+      throw error;
+    }
   }
 
   async create(accountId: string, input: { name: string; description?: string }) {
@@ -90,11 +119,7 @@ export class ProjectService {
     });
   }
 
-  async rename(
-    accountId: string,
-    projectPublicId: string,
-    input: { name?: string; description?: string },
-  ) {
+  async rename(accountId: string, projectPublicId: string, input: { name?: string; description?: string }) {
     const project = await this.get(accountId, projectPublicId);
     if (!project) return null;
     const data: Record<string, unknown> = {};

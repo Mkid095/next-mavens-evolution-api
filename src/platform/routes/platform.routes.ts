@@ -1,33 +1,22 @@
-import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
-import { platformRepository } from '../repository/platform.repository';
-import { PlatformAuthService } from '../services/platform-auth.service';
-import { TenantService } from '../services/tenant.service';
-import { SubscriptionService } from '../services/subscription.service';
-import { AuditService } from '../services/audit.service';
+import { Request, Response, Router } from 'express';
+
+import { idempotencyMiddleware } from '../middleware/idempotency.middleware';
 import { platformAuthMiddleware } from '../middleware/platform-auth.middleware';
 import { tenantResolveMiddleware } from '../middleware/tenant-resolve.middleware';
-import { idempotencyMiddleware } from '../middleware/idempotency.middleware';
-
-interface PlatformTenant {
-  accountId: string;
-  publicId: string;
-  status: string;
-  plan: { planId: string; name: string; monthlyMessageLimit: number | null };
-}
+import { platformRepository } from '../repository/platform.repository';
+import { appService } from '../services/app.service';
+import { AuditService } from '../services/audit.service';
+import { PlatformAuthService } from '../services/platform-auth.service';
+import { SubscriptionService } from '../services/subscription.service';
+import { TenantService } from '../services/tenant.service';
+import { PlatformTenant } from '../types/platform-tenant';
 
 /** PBKDF2-based password hashing (no external dependency) */
 function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16);
   const hash = crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512');
   return `${salt.toString('hex')}:${hash.toString('hex')}`;
-}
-
-function verifyPassword(password: string, stored: string): boolean {
-  const [saltHex, hashHex] = stored.split(':');
-  const salt = Buffer.from(saltHex, 'hex');
-  const expected = crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512');
-  return crypto.timingSafeEqual(expected, Buffer.from(hashHex, 'hex'));
 }
 
 const router: Router = Router();
@@ -40,52 +29,73 @@ const auditService = new AuditService();
  * List accounts for the authenticated tenant.
  * GET /accounts — returns only the authenticated tenant's account.
  */
-router.get('/', platformAuthMiddleware.authenticate, tenantResolveMiddleware.resolve, async (req: Request, res: Response) => {
-  try {
-    const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-    if (!platformTenant) { res.status(401).json({ error: 'UNAUTHORIZED' }); return; }
-    // Return only the authenticated tenant's own account
-    const account = await platformRepository.platformAccount.findUnique({
-      where: { id: platformTenant.accountId },
-      include: { subscriptions: { include: { plan: true } } },
-    });
-    if (!account) { res.status(404).json({ error: 'NOT_FOUND' }); return; }
-    res.json([{
-      id: account.id,
-      publicId: account.publicId,
-      status: account.status,
-      plan: account.subscriptions?.[0]?.plan?.name ?? null,
-      createdAt: account.createdAt,
-    }]);
-  } catch (error) {
-    res.status(500).json({ error: 'FETCH_ERROR' });
-  }
-});
+router.get(
+  '/',
+  platformAuthMiddleware.authenticate,
+  tenantResolveMiddleware.resolve,
+  async (req: Request, res: Response) => {
+    try {
+      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
+      if (!platformTenant) {
+        res.status(401).json({ error: 'UNAUTHORIZED' });
+        return;
+      }
+      // Return only the authenticated tenant's own account
+      const account = await platformRepository.platformAccount.findUnique({
+        where: { id: platformTenant.accountId },
+        include: { subscriptions: { include: { plan: true } } },
+      });
+      if (!account) {
+        res.status(404).json({ error: 'NOT_FOUND' });
+        return;
+      }
+      res.json([
+        {
+          id: account.id,
+          publicId: account.publicId,
+          status: account.status,
+          plan: account.subscriptions?.[0]?.plan?.name ?? null,
+          createdAt: account.createdAt,
+        },
+      ]);
+    } catch {
+      res.status(500).json({ error: 'FETCH_ERROR' });
+    }
+  },
+);
 
 /**
  * Get account by publicId
  * GET /accounts/:publicId
  * Returns 403 if the authenticated tenant does not own this account.
  */
-router.get('/:publicId', platformAuthMiddleware.authenticate, tenantResolveMiddleware.resolve, async (req: Request, res: Response) => {
-  try {
-    const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-    if (!platformTenant) { res.status(401).json({ error: 'UNAUTHORIZED' }); return; }
-    // Tenant can only look up their own account
-    if (platformTenant.publicId !== req.params.publicId) {
-      res.status(403).json({ error: 'FORBIDDEN' });
-      return;
+router.get(
+  '/:publicId',
+  platformAuthMiddleware.authenticate,
+  tenantResolveMiddleware.resolve,
+  async (req: Request, res: Response) => {
+    try {
+      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
+      if (!platformTenant) {
+        res.status(401).json({ error: 'UNAUTHORIZED' });
+        return;
+      }
+      // Tenant can only look up their own account
+      if (platformTenant.publicId !== req.params.publicId) {
+        res.status(403).json({ error: 'FORBIDDEN' });
+        return;
+      }
+      const account = await tenantService.resolveAccount(req.params.publicId);
+      if (!account) {
+        res.status(404).json({ error: 'NOT_FOUND' });
+        return;
+      }
+      res.json(account);
+    } catch {
+      res.status(500).json({ error: 'FETCH_ERROR' });
     }
-    const account = await tenantService.resolveAccount(req.params.publicId);
-    if (!account) {
-      res.status(404).json({ error: 'NOT_FOUND' });
-      return;
-    }
-    res.json(account);
-  } catch (error) {
-    res.status(500).json({ error: 'FETCH_ERROR' });
-  }
-});
+  },
+);
 
 /**
  * Create account + initial user + API key (admin only)
@@ -123,8 +133,10 @@ router.post('/', async (req: Request, res: Response) => {
       },
     });
 
-    // Create initial API key
-    const { plaintextKey } = await authService.createApiKey(account.id, 'Initial Key', ['*']);
+    // Create initial API key — there is no tenant yet, so the account's
+    // default app is resolved explicitly (it is created lazily on demand).
+    const defaultApp = await appService.resolveDefault(account.id);
+    const { plaintextKey } = await authService.createApiKey(account.id, 'Initial Key', ['*'], undefined, defaultApp.id);
 
     await auditService.record(account.id, 'ACCOUNT_CREATE', { type: 'account', id: account.publicId });
 
@@ -133,7 +145,7 @@ router.post('/', async (req: Request, res: Response) => {
       userId: user.publicId,
       apiKey: plaintextKey,
     });
-  } catch (error) {
+  } catch {
     res.status(500).json({ error: 'CREATE_ERROR' });
   }
 });
@@ -142,17 +154,25 @@ router.post('/', async (req: Request, res: Response) => {
  * Suspend account (admin only)
  * POST /accounts/:id/suspend
  */
-router.post('/:id/suspend', platformAuthMiddleware.authenticate, tenantResolveMiddleware.resolve, async (req: Request, res: Response) => {
-  try {
-    const { reason } = req.body;
-    const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-    await tenantService.suspendAccount(platformTenant!.accountId, reason ?? 'Admin action');
-    await auditService.record(platformTenant!.accountId, 'ACCOUNT_SUSPEND', { type: 'account', id: platformTenant!.publicId });
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'UPDATE_ERROR' });
-  }
-});
+router.post(
+  '/:id/suspend',
+  platformAuthMiddleware.authenticate,
+  tenantResolveMiddleware.resolve,
+  async (req: Request, res: Response) => {
+    try {
+      const { reason } = req.body;
+      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
+      await tenantService.suspendAccount(platformTenant!.accountId, reason ?? 'Admin action');
+      await auditService.record(platformTenant!.accountId, 'ACCOUNT_SUSPEND', {
+        type: 'account',
+        id: platformTenant!.publicId,
+      });
+      res.json({ success: true });
+    } catch {
+      res.status(500).json({ error: 'UPDATE_ERROR' });
+    }
+  },
+);
 
 /**
  * List users for the authenticated tenant.
@@ -160,152 +180,209 @@ router.post('/:id/suspend', platformAuthMiddleware.authenticate, tenantResolveMi
  * accountId in URL must match the authenticated tenant's publicId.
  * The query always uses the authenticated tenant's INTERNAL accountId.
  */
-router.get('/:accountId/users', platformAuthMiddleware.authenticate, tenantResolveMiddleware.resolve, async (req: Request, res: Response) => {
-  try {
-    const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-    if (!platformTenant) { res.status(401).json({ error: 'UNAUTHORIZED' }); return; }
-    // URL accountId must match authenticated tenant's publicId — prevents cross-tenant access
-    if (platformTenant.publicId !== req.params.accountId) {
-      res.status(403).json({ error: 'FORBIDDEN' });
-      return;
+router.get(
+  '/:accountId/users',
+  platformAuthMiddleware.authenticate,
+  tenantResolveMiddleware.resolve,
+  async (req: Request, res: Response) => {
+    try {
+      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
+      if (!platformTenant) {
+        res.status(401).json({ error: 'UNAUTHORIZED' });
+        return;
+      }
+      // URL accountId must match authenticated tenant's publicId — prevents cross-tenant access
+      if (platformTenant.publicId !== req.params.accountId) {
+        res.status(403).json({ error: 'FORBIDDEN' });
+        return;
+      }
+      const users = await platformRepository.platformUser.findMany({
+        where: { accountId: platformTenant.accountId },
+        select: { id: true, publicId: true, email: true, role: true, createdAt: true, lastLoginAt: true },
+      });
+      res.json(users);
+    } catch {
+      res.status(500).json({ error: 'FETCH_ERROR' });
     }
-    const users = await platformRepository.platformUser.findMany({
-      where: { accountId: platformTenant.accountId },
-      select: { id: true, publicId: true, email: true, role: true, createdAt: true, lastLoginAt: true },
-    });
-    res.json(users);
-  } catch (error) {
-    res.status(500).json({ error: 'FETCH_ERROR' });
-  }
-});
+  },
+);
 
 /**
  * Create user for the authenticated tenant.
  * POST /accounts/:accountId/users
  * accountId in URL must match the authenticated tenant's publicId.
  */
-router.post('/:accountId/users', platformAuthMiddleware.authenticate, tenantResolveMiddleware.resolve, async (req: Request, res: Response) => {
-  try {
-    const { email, name, role } = req.body;
-    const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-    if (!platformTenant) { res.status(401).json({ error: 'UNAUTHORIZED' }); return; }
-    // URL accountId must match authenticated tenant's publicId — prevents cross-tenant access
-    if (platformTenant.publicId !== req.params.accountId) {
-      res.status(403).json({ error: 'FORBIDDEN' });
-      return;
+router.post(
+  '/:accountId/users',
+  platformAuthMiddleware.authenticate,
+  tenantResolveMiddleware.resolve,
+  async (req: Request, res: Response) => {
+    try {
+      const { email, name, role } = req.body;
+      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
+      if (!platformTenant) {
+        res.status(401).json({ error: 'UNAUTHORIZED' });
+        return;
+      }
+      // URL accountId must match authenticated tenant's publicId — prevents cross-tenant access
+      if (platformTenant.publicId !== req.params.accountId) {
+        res.status(403).json({ error: 'FORBIDDEN' });
+        return;
+      }
+      const accountId = platformTenant.accountId;
+      const userPublicId = `usr_${crypto.randomBytes(8).toString('hex')}`;
+      const user = await platformRepository.platformUser.create({
+        data: { publicId: userPublicId, accountId, email, name, role: role ?? 'MEMBER' },
+      });
+      await auditService.record(accountId, 'USER_CREATE', { type: 'user', id: user.publicId });
+      idempotencyMiddleware.complete(req, res, { id: user.publicId, email: user.email }, user.publicId);
+      res.status(201).json({ id: user.publicId, email: user.email });
+    } catch {
+      res.status(500).json({ error: 'CREATE_ERROR' });
     }
-    const accountId = platformTenant.accountId;
-    const userPublicId = `usr_${crypto.randomBytes(8).toString('hex')}`;
-    const user = await platformRepository.platformUser.create({
-      data: { publicId: userPublicId, accountId, email, name, role: role ?? 'MEMBER' },
-    });
-    await auditService.record(accountId, 'USER_CREATE', { type: 'user', id: user.publicId });
-    idempotencyMiddleware.complete(req, res, { id: user.publicId, email: user.email }, user.publicId);
-    res.status(201).json({ id: user.publicId, email: user.email });
-  } catch (error) {
-    res.status(500).json({ error: 'CREATE_ERROR' });
-  }
-});
+  },
+);
 
 /**
  * List API keys for the authenticated tenant.
  * GET /accounts/:accountId/api-keys
  * accountId in URL must match the authenticated tenant's publicId.
  */
-router.get('/:accountId/api-keys', platformAuthMiddleware.authenticate, tenantResolveMiddleware.resolve, async (req: Request, res: Response) => {
-  try {
-    const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-    if (!platformTenant) { res.status(401).json({ error: 'UNAUTHORIZED' }); return; }
-    if (platformTenant.publicId !== req.params.accountId) {
-      res.status(403).json({ error: 'FORBIDDEN' });
-      return;
+router.get(
+  '/:accountId/api-keys',
+  platformAuthMiddleware.authenticate,
+  tenantResolveMiddleware.resolve,
+  async (req: Request, res: Response) => {
+    try {
+      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
+      if (!platformTenant) {
+        res.status(401).json({ error: 'UNAUTHORIZED' });
+        return;
+      }
+      if (platformTenant.publicId !== req.params.accountId) {
+        res.status(403).json({ error: 'FORBIDDEN' });
+        return;
+      }
+      const keys = await authService.listApiKeys(platformTenant.accountId);
+      // Never return keyHash or plaintext — only public metadata
+      res.json(
+        keys.map((k) => ({
+          id: k.publicId,
+          name: k.name,
+          scopes: k.scopes,
+          // Safe to expose: the prefix is the first 16 chars of the key
+          // ("fidscript_sk_" + 4 hex). The hash and plaintext never leave the server.
+          keyPrefix: k.keyPrefix,
+          createdAt: k.createdAt,
+          expiresAt: k.expiresAt,
+          revokedAt: k.revokedAt,
+          lastUsedAt: k.lastUsedAt,
+        })),
+      );
+    } catch {
+      res.status(500).json({ error: 'FETCH_ERROR' });
     }
-    const keys = await authService.listApiKeys(platformTenant.accountId);
-    // Never return keyHash or plaintext — only public metadata
-    res.json(keys.map(k => ({
-      id: k.publicId,
-      name: k.name,
-      scopes: k.scopes,
-      createdAt: k.createdAt,
-      expiresAt: k.expiresAt,
-      revokedAt: k.revokedAt,
-      lastUsedAt: k.lastUsedAt,
-    })));
-  } catch (error) {
-    res.status(500).json({ error: 'FETCH_ERROR' });
-  }
-});
+  },
+);
 
 /**
  * Create API key for the authenticated tenant.
  * POST /accounts/:accountId/api-keys
  * accountId in URL must match the authenticated tenant's publicId.
  */
-router.post('/:accountId/api-keys', platformAuthMiddleware.authenticate, tenantResolveMiddleware.resolve, async (req: Request, res: Response) => {
-  try {
-    const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-    if (!platformTenant) { res.status(401).json({ error: 'UNAUTHORIZED' }); return; }
-    if (platformTenant.publicId !== req.params.accountId) {
-      res.status(403).json({ error: 'FORBIDDEN' }); return;
+router.post(
+  '/:accountId/api-keys',
+  platformAuthMiddleware.authenticate,
+  tenantResolveMiddleware.resolve,
+  async (req: Request, res: Response) => {
+    try {
+      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
+      if (!platformTenant) {
+        res.status(401).json({ error: 'UNAUTHORIZED' });
+        return;
+      }
+      if (platformTenant.publicId !== req.params.accountId) {
+        res.status(403).json({ error: 'FORBIDDEN' });
+        return;
+      }
+      const { name, scopes } = req.body;
+      const { publicId, plaintextKey } = await authService.createApiKey(
+        platformTenant.accountId,
+        name ?? 'Unnamed Key',
+        scopes ?? [],
+        undefined,
+        platformTenant.defaultApp.id,
+      );
+      idempotencyMiddleware.complete(req, res, { id: publicId, name, scopes, apiKey: plaintextKey }, publicId);
+      res.status(201).json({ id: publicId, name, scopes, apiKey: plaintextKey });
+    } catch {
+      res.status(500).json({ error: 'CREATE_ERROR' });
     }
-    const { name, scopes } = req.body;
-    const { publicId, plaintextKey } = await authService.createApiKey(
-      platformTenant.accountId,
-      name ?? 'Unnamed Key',
-      scopes ?? [],
-    );
-    idempotencyMiddleware.complete(req, res, { id: publicId, name, scopes, apiKey: plaintextKey }, publicId);
-    res.status(201).json({ id: publicId, name, scopes, apiKey: plaintextKey });
-  } catch (error) {
-    res.status(500).json({ error: 'CREATE_ERROR' });
-  }
-});
+  },
+);
 
 /**
  * Revoke an API key (sets revokedAt to now).
  * DELETE /accounts/:accountId/api-keys/:keyId
  * keyId is the public ID (key_xxx).
  */
-router.delete('/:accountId/api-keys/:keyId', platformAuthMiddleware.authenticate, tenantResolveMiddleware.resolve, async (req: Request, res: Response) => {
-  try {
-    const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-    if (!platformTenant) { res.status(401).json({ error: 'UNAUTHORIZED' }); return; }
-    if (platformTenant.publicId !== req.params.accountId) {
-      res.status(403).json({ error: 'FORBIDDEN' });
-      return;
+router.delete(
+  '/:accountId/api-keys/:keyId',
+  platformAuthMiddleware.authenticate,
+  tenantResolveMiddleware.resolve,
+  async (req: Request, res: Response) => {
+    try {
+      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
+      if (!platformTenant) {
+        res.status(401).json({ error: 'UNAUTHORIZED' });
+        return;
+      }
+      if (platformTenant.publicId !== req.params.accountId) {
+        res.status(403).json({ error: 'FORBIDDEN' });
+        return;
+      }
+      const ok = await authService.revokeApiKey(req.params.keyId, platformTenant.accountId);
+      if (!ok) {
+        res.status(404).json({ error: 'NOT_FOUND' });
+        return;
+      }
+      res.json({ success: true });
+    } catch {
+      res.status(500).json({ error: 'REVOKE_ERROR' });
     }
-    const ok = await authService.revokeApiKey(req.params.keyId, platformTenant.accountId);
-    if (!ok) {
-      res.status(404).json({ error: 'NOT_FOUND' });
-      return;
-    }
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'REVOKE_ERROR' });
-  }
-});
+  },
+);
 
 /**
  * Get subscription for the authenticated tenant.
  * GET /accounts/:accountId/subscription
  * accountId in URL must match the authenticated tenant's publicId.
  */
-router.get('/:accountId/subscription', platformAuthMiddleware.authenticate, tenantResolveMiddleware.resolve, async (req: Request, res: Response) => {
-  try {
-    const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-    if (!platformTenant) { res.status(401).json({ error: 'UNAUTHORIZED' }); return; }
-    if (platformTenant.publicId !== req.params.accountId) {
-      res.status(403).json({ error: 'FORBIDDEN' }); return;
+router.get(
+  '/:accountId/subscription',
+  platformAuthMiddleware.authenticate,
+  tenantResolveMiddleware.resolve,
+  async (req: Request, res: Response) => {
+    try {
+      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
+      if (!platformTenant) {
+        res.status(401).json({ error: 'UNAUTHORIZED' });
+        return;
+      }
+      if (platformTenant.publicId !== req.params.accountId) {
+        res.status(403).json({ error: 'FORBIDDEN' });
+        return;
+      }
+      const subscription = await subscriptionService.getActiveSubscription(platformTenant.accountId);
+      if (!subscription) {
+        res.status(404).json({ error: 'NOT_FOUND' });
+        return;
+      }
+      res.json(subscription);
+    } catch {
+      res.status(500).json({ error: 'FETCH_ERROR' });
     }
-    const subscription = await subscriptionService.getActiveSubscription(platformTenant.accountId);
-    if (!subscription) {
-      res.status(404).json({ error: 'NOT_FOUND' });
-      return;
-    }
-    res.json(subscription);
-  } catch (error) {
-    res.status(500).json({ error: 'FETCH_ERROR' });
-  }
-});
+  },
+);
 
 export { router as platformRoutes };

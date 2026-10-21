@@ -37,6 +37,7 @@ export class EvolutionStartupService extends ChannelStartupService {
   }
 
   public client: any;
+  public openaiService?: any;
 
   public stateConnection: wa.StateConnection = { state: 'open' };
 
@@ -234,13 +235,7 @@ export class EvolutionStartupService extends ChannelStartupService {
     });
   }
 
-  protected async sendMessageWithTyping(
-    number: string,
-    message: any,
-    options?: Options,
-    file?: any,
-    isIntegration = false,
-  ) {
+  protected async sendMessageWithTyping(number: string, message: any, options?: Options, file?: any) {
     try {
       let quoted: any;
       let webhookUrl: any;
@@ -468,7 +463,7 @@ export class EvolutionStartupService extends ChannelStartupService {
     }
   }
 
-  public async textMessage(data: SendTextDto, isIntegration = false) {
+  public async textMessage(data: SendTextDto) {
     const res = await this.sendMessageWithTyping(
       data.number,
       {
@@ -483,7 +478,6 @@ export class EvolutionStartupService extends ChannelStartupService {
         mentioned: data?.mentioned,
       },
       null,
-      isIntegration,
     );
     return res;
   }
@@ -529,7 +523,7 @@ export class EvolutionStartupService extends ChannelStartupService {
     }
   }
 
-  public async mediaMessage(data: SendMediaDto, file?: any, isIntegration = false) {
+  public async mediaMessage(data: SendMediaDto, file?: any) {
     const mediaData: SendMediaDto = { ...data };
 
     if (file) mediaData.media = file.buffer.toString('base64');
@@ -548,7 +542,6 @@ export class EvolutionStartupService extends ChannelStartupService {
         mentioned: data?.mentioned,
       },
       file,
-      isIntegration,
     );
 
     return mediaSent;
@@ -622,7 +615,7 @@ export class EvolutionStartupService extends ChannelStartupService {
     }
   }
 
-  public async audioWhatsapp(data: SendAudioDto, file?: any, isIntegration = false) {
+  public async audioWhatsapp(data: SendAudioDto, file?: any) {
     const mediaData: SendAudioDto = { ...data };
 
     if (file?.buffer) {
@@ -646,13 +639,12 @@ export class EvolutionStartupService extends ChannelStartupService {
         mentioned: data?.mentioned,
       },
       file,
-      isIntegration,
     );
 
     return audioSent;
   }
 
-  public async buttonMessage(data: SendButtonsDto, isIntegration = false) {
+  public async buttonMessage(data: SendButtonsDto) {
     return await this.sendMessageWithTyping(
       data.number,
       {
@@ -671,7 +663,6 @@ export class EvolutionStartupService extends ChannelStartupService {
         mentioned: data?.mentioned,
       },
       null,
-      isIntegration,
     );
   }
   public async locationMessage() {

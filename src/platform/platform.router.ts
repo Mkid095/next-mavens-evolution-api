@@ -1,6 +1,34 @@
-import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
+import { Request, Response, Router } from 'express';
+
+import { entitlementMiddleware } from './middleware/entitlement.middleware';
+import { hybridAuth } from './middleware/hybrid-auth.middleware';
+import { idempotencyMiddleware } from './middleware/idempotency.middleware';
+import { platformAuthMiddleware } from './middleware/platform-auth.middleware';
+import { platformRateLimitMiddleware } from './middleware/platform-rate-limit.middleware';
+import { scopeEnforceMiddleware } from './middleware/scope-enforce.middleware';
+import { tenantResolveMiddleware } from './middleware/tenant-resolve.middleware';
 import { platformRepository } from './repository/platform.repository';
+/**
+ * Global activity feed — every audit event streams to the
+ * authenticated account's topbar. SSE-only, no scope-enforce
+ * (this is a read channel, not a write).
+ */
+import { activityRoutes } from './routes/activity.routes';
+import { authRouter, getCompanyGatePassword, getSessionService } from './routes/auth.routes';
+import { contactRoutes } from './routes/contact.routes';
+import { groupRoutes } from './routes/group.routes';
+import { instanceRoutes } from './routes/instance.routes';
+import { mcpRouter } from './routes/mcp.routes';
+import { messageRoutes } from './routes/message.routes';
+import { messagePublicRoutes } from './routes/message-public.routes';
+import { platformRoutes } from './routes/platform.routes';
+import { projectRoutes } from './routes/project.routes';
+import { createSseRouter } from './routes/sse.routes';
+import { webhookRoutes } from './routes/webhook.routes';
+import { appService } from './services/app.service';
+import { AuditService } from './services/audit.service';
+import { PlatformTenant } from './types/platform-tenant';
 
 /** PBKDF2-based password hashing (no external dependency) */
 function hashPassword(password: string): string {
@@ -8,26 +36,6 @@ function hashPassword(password: string): string {
   const hash = crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512');
   return `${salt.toString('hex')}:${hash.toString('hex')}`;
 }
-import { platformRoutes } from './routes/platform.routes';
-import { webhookRoutes } from './routes/webhook.routes';
-import { messageRoutes } from './routes/message.routes';
-import { messagePublicRoutes } from './routes/message-public.routes';
-import { instanceRoutes } from './routes/instance.routes';
-import { contactRoutes } from './routes/contact.routes';
-import { groupRoutes } from './routes/group.routes';
-import { projectRoutes } from './routes/project.routes';
-import { authRouter, setSessionService, getSessionService } from './routes/auth.routes';
-import { createSseRouter } from './routes/sse.routes';
-import { mcpRouter } from './routes/mcp.routes';
-import { SessionService } from './services/session.service';
-import { platformAuthMiddleware } from './middleware/platform-auth.middleware';
-import { tenantResolveMiddleware } from './middleware/tenant-resolve.middleware';
-import { idempotencyMiddleware } from './middleware/idempotency.middleware';
-import { scopeEnforceMiddleware } from './middleware/scope-enforce.middleware';
-import { platformRateLimitMiddleware } from './middleware/platform-rate-limit.middleware';
-import { entitlementMiddleware } from './middleware/entitlement.middleware';
-import { AuditService } from './services/audit.service';
-import { hybridAuth } from './middleware/hybrid-auth.middleware';
 
 const router: Router = Router();
 const auditService = new AuditService();
@@ -45,15 +53,44 @@ const middlewareChain = [
 ];
 
 /**
- * Platform onboarding endpoint (unauthenticated).
- * Creates a new account and returns API key.
+ * Platform onboarding endpoint.
+ *
+ * Gated by the company password, exactly like `/platform/auth/signup`:
+ * this endpoint provisions a brand-new account, an OWNER user and a
+ * wildcard API key, so it must not be reachable anonymously.
+ *
+ * Body: { email, name, password, companyPassword, planId? }
  */
 router.post('/platform/onboard', async (req: Request, res: Response) => {
   try {
-    const { email, name, planId } = req.body;
+    const { email, name, password, companyPassword, planId } = req.body ?? {};
 
-    if (!email || !name) {
-      res.status(400).json({ error: 'VALIDATION_ERROR', message: 'email and name are required' });
+    if (!email || !name || !password || !companyPassword) {
+      res.status(400).json({
+        error: 'VALIDATION_ERROR',
+        message: 'email, name, password, and companyPassword are required',
+      });
+      return;
+    }
+    if (typeof password !== 'string' || password.length < 8) {
+      res.status(400).json({
+        error: 'WEAK_PASSWORD',
+        message: 'Password must be at least 8 characters',
+      });
+      return;
+    }
+    const gatePassword = await getCompanyGatePassword();
+    if (!gatePassword) {
+      // The gate is not configured — fail closed rather than letting anyone in.
+      res.status(503).json({
+        error: 'GATE_UNAVAILABLE',
+        message: 'Account creation is not configured. Contact your administrator.',
+      });
+      return;
+    }
+    if (companyPassword !== gatePassword) {
+      // Same generic message as login to avoid leaking which gate exists
+      res.status(401).json({ error: 'INVALID_CREDENTIALS', message: 'Invalid company password' });
       return;
     }
 
@@ -69,7 +106,7 @@ router.post('/platform/onboard', async (req: Request, res: Response) => {
 
     // Create initial user
     const userPublicId = `usr_${crypto.randomBytes(8).toString('hex')}`;
-    const passwordHash = hashPassword('changeme');
+    const passwordHash = hashPassword(password);
     const user = await platformRepository.platformUser.create({
       data: {
         publicId: userPublicId,
@@ -85,10 +122,12 @@ router.post('/platform/onboard', async (req: Request, res: Response) => {
       ? await platformRepository.platformPlan.findUnique({ where: { id: planId } })
       : await platformRepository.platformPlan.findFirst();
 
-    // Create API key
+    // Create API key — there is no tenant yet, so the account's default
+    // app is resolved explicitly (created lazily on demand).
     const { PlatformAuthService } = await import('./services/platform-auth.service');
     const authService = new PlatformAuthService();
-    const { plaintextKey } = await authService.createApiKey(account.id, 'Default Key', ['*']);
+    const defaultApp = await appService.resolveDefault(account.id);
+    const { plaintextKey } = await authService.createApiKey(account.id, 'Default Key', ['*'], undefined, defaultApp.id);
 
     // Create default subscription
     await platformRepository.platformSubscription.create({
@@ -105,11 +144,13 @@ router.post('/platform/onboard', async (req: Request, res: Response) => {
     await auditService.record(account.id, 'ACCOUNT_ONBOARD', { type: 'account', id: account.publicId });
 
     res.status(201).json({
+      accountId: account.publicId,
+      userId: user.publicId,
       account: { id: account.publicId, name: account.name },
       user: { id: user.publicId, email: user.email },
       apiKey: plaintextKey,
     });
-  } catch (error) {
+  } catch {
     res.status(500).json({ error: 'ONBOARD_ERROR', message: 'Failed to create account' });
   }
 });
@@ -131,13 +172,6 @@ router.use('/platform/sse', createSseRouter(getSessionService()));
  * Auth: API key (X-API-Key header)
  */
 router.use('/platform/mcp', mcpRouter);
-
-/**
- * Global activity feed — every audit event streams to the
- * authenticated account's topbar. SSE-only, no scope-enforce
- * (this is a read channel, not a write).
- */
-import { activityRoutes } from './routes/activity.routes';
 router.use('/platform/activity', hybridAuth(getSessionService()), tenantResolveMiddleware.resolve, activityRoutes);
 
 /**
@@ -203,7 +237,7 @@ router.get('/plans', async (req: Request, res: Response) => {
     const subscriptionService = new SubscriptionService();
     const plans = await subscriptionService.listPlans();
     res.json(plans);
-  } catch (error) {
+  } catch {
     res.status(500).json({ error: 'FETCH_ERROR' });
   }
 });
@@ -223,18 +257,23 @@ router.get('/platform/health', async (req: Request, res: Response) => {
 /**
  * Get current tenant info — hybrid auth (session or API key)
  */
-router.get('/me', hybridAuth(getSessionService()), tenantResolveMiddleware.resolve, async (req: Request, res: Response) => {
-  const platformTenant = (req as Request & { platformTenant?: { accountId: string; publicId: string; status: string; plan: { planId: string; name: string } } }).platformTenant;
-  if (!platformTenant) {
-    res.status(401).json({ error: 'UNAUTHORIZED' });
-    return;
-  }
-  res.json({
-    accountId: platformTenant.accountId,
-    publicId: platformTenant.publicId,
-    status: platformTenant.status,
-    plan: platformTenant.plan,
-  });
-});
+router.get(
+  '/me',
+  hybridAuth(getSessionService()),
+  tenantResolveMiddleware.resolve,
+  async (req: Request, res: Response) => {
+    const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
+    if (!platformTenant) {
+      res.status(401).json({ error: 'UNAUTHORIZED' });
+      return;
+    }
+    res.json({
+      accountId: platformTenant.accountId,
+      publicId: platformTenant.publicId,
+      status: platformTenant.status,
+      plan: platformTenant.plan,
+    });
+  },
+);
 
 export { router as platformRouter };

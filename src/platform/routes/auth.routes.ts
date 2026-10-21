@@ -9,6 +9,7 @@ import {
 } from '../middleware/session-auth.middleware';
 import { platformRepository } from '../repository/platform.repository';
 import { SessionService } from '../services/session.service';
+import { settingsService } from '../services/settings.service';
 
 /** Verify a password against a stored hash */
 function verifyPassword(password: string, stored: string): boolean {
@@ -242,12 +243,12 @@ router.post('/refresh-session', sessionAuthMiddleware(getSessionService()), asyn
  *      link to, so we ask for the company password as proof of
  *      organization membership, then let them set a new password.
  *
- * The env var lets ops rotate the gate without code changes. A
- * dev default is provided so local development works out of the
- * box, but the env var MUST be set in production.
+ * The gate password lives in the `PlatformSetting` table, encrypted with
+ * `PLATFORM_ENCRYPTION_KEY`. `COMPANY_GATE_PASSWORD` is only a bootstrap
+ * seed for a fresh database — see `SettingsService.getCompanyGatePassword()`.
  */
-function getCompanyGatePassword(): string {
-  return process.env.COMPANY_GATE_PASSWORD || 'COMPANY_GATE_PASSWORD_PLACEHOLDER';
+export async function getCompanyGatePassword(): Promise<string | null> {
+  return settingsService.getCompanyGatePassword();
 }
 
 /** Hash a plaintext password using PBKDF2-SHA512 */
@@ -274,7 +275,9 @@ router.post('/signup', async (req: Request, res: Response) => {
   };
 
   if (!name || !email || !password || !companyPassword) {
-    res.status(400).json({ error: 'MISSING_FIELDS', message: 'name, email, password, and companyPassword are required' });
+    res
+      .status(400)
+      .json({ error: 'MISSING_FIELDS', message: 'name, email, password, and companyPassword are required' });
     return;
   }
   if (name.trim().length < 2 || name.trim().length > 80) {
@@ -285,7 +288,16 @@ router.post('/signup', async (req: Request, res: Response) => {
     res.status(400).json({ error: 'WEAK_PASSWORD', message: 'Password must be at least 8 characters' });
     return;
   }
-  if (companyPassword !== getCompanyGatePassword()) {
+  const gatePassword = await getCompanyGatePassword();
+  if (!gatePassword) {
+    // The gate is not configured — fail closed rather than letting anyone in.
+    res.status(503).json({
+      error: 'GATE_UNAVAILABLE',
+      message: 'Account creation is not configured. Contact your administrator.',
+    });
+    return;
+  }
+  if (companyPassword !== gatePassword) {
     // Same generic message as login to avoid leaking which gate exists
     res.status(401).json({ error: 'INVALID_CREDENTIALS', message: 'Invalid company password' });
     return;
@@ -363,7 +375,15 @@ router.post('/forgot-password/verify', async (req: Request, res: Response) => {
   }
 
   // First check: company password is the gate
-  if (companyPassword !== getCompanyGatePassword()) {
+  const gatePassword = await getCompanyGatePassword();
+  if (!gatePassword) {
+    res.status(503).json({
+      error: 'GATE_UNAVAILABLE',
+      message: 'Password recovery is not configured. Contact your administrator.',
+    });
+    return;
+  }
+  if (companyPassword !== gatePassword) {
     res.status(401).json({ error: 'INVALID_CREDENTIALS', message: 'Invalid company password' });
     return;
   }
@@ -423,7 +443,7 @@ router.post('/forgot-password/reset', async (req: Request, res: Response) => {
       .digest('hex');
     if (expected !== sig) throw new Error('Bad signature');
     if (Date.now() > Number(exp)) throw new Error('Token expired');
-  } catch (err) {
+  } catch {
     res.status(401).json({ error: 'INVALID_TOKEN', message: 'Reset link is invalid or expired' });
     return;
   }
