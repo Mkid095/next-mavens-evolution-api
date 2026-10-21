@@ -259,24 +259,120 @@ export class EvolutionAdapter implements IWhatsAppAdapter {
       throw new Error(`PlatformInstance ${instanceId} not found`);
     }
 
-    const instanceName = platformInstance.name;
-    const existing = waMonitor.waInstances[instanceName];
-    const isConnected = existing?.stateConnection?.state === 'open';
-
-    let status: InstanceStatus = platformInstance.status as InstanceStatus;
-    if (isConnected) {
-      status = 'CONNECTED';
-    } else if (existing?.stateConnection?.state === 'connecting') {
-      status = 'CONNECTING';
-    }
+    // Reconcile the stored row with the live socket before answering.
+    // The engine owns the truth about whether a device is connected; the
+    // platform row is a copy of it, and a copy that is never refreshed
+    // is a copy that lies.
+    const status = await this.syncInstanceStatus(instanceId);
+    const synced = await platformRepository.platformInstance.findUnique({
+      where: { id: instanceId },
+      select: { phoneNumber: true, lastConnectedAt: true, capabilities: true },
+    });
 
     return {
       publicId: platformInstance.publicId,
       status,
-      phoneNumber: platformInstance.phoneNumber,
-      capabilities: (platformInstance.capabilities as string[]) ?? [],
-      connectedAt: platformInstance.lastConnectedAt?.toISOString() ?? null,
+      phoneNumber: synced?.phoneNumber ?? platformInstance.phoneNumber,
+      capabilities: (synced?.capabilities as string[]) ?? (platformInstance.capabilities as string[]) ?? [],
+      connectedAt: synced?.lastConnectedAt?.toISOString() ?? platformInstance.lastConnectedAt?.toISOString() ?? null,
     };
+  }
+
+  /**
+   * Reconcile the platform's instance row with the live engine state.
+   *
+   * The engine updates its own `Instance` row when the Baileys socket
+   * opens or closes, but nothing told the platform. So a device that
+   * had been paired and was sending messages perfectly well still read
+   * `CONNECTING` in the platform row — the dashboard showed it as
+   * never connected, and every tool that checks the stored status
+   * refused to use it.
+   *
+   * This reads the live socket and the engine's row, and writes the
+   * truth back onto the platform row.
+   */
+  async syncInstanceStatus(instanceId: string): Promise<InstanceStatus> {
+    const platformInstance = await platformRepository.platformInstance.findUnique({
+      where: { id: instanceId },
+      select: {
+        id: true,
+        name: true,
+        status: true,
+        phoneNumber: true,
+        lastConnectedAt: true,
+      },
+    });
+
+    if (!platformInstance) {
+      throw new Error(`PlatformInstance ${instanceId} not found`);
+    }
+
+    const live = waMonitor.waInstances[platformInstance.name];
+    const liveState = live?.stateConnection?.state;
+
+    const engine = await platformRepository.instance.findFirst({
+      where: { name: platformInstance.name },
+      select: { number: true, ownerJid: true, connectionStatus: true },
+    });
+
+    /*
+     * The live socket is the truth about whether the device is connected
+     * RIGHT NOW. The engine's row records what was true when the process
+     * last wrote it, which after a restart is simply stale — the row says
+     * `open` while no socket exists at all.
+     */
+    let status: InstanceStatus = platformInstance.status as InstanceStatus;
+    if (liveState === 'open') status = 'CONNECTED';
+    else if (liveState === 'connecting') status = 'CONNECTING';
+    else status = 'DISCONNECTED';
+
+    // The number the session belongs to. The engine knows it two ways:
+    // a dedicated `number` column, and the owner JID of the session
+    // (`254…@s.whatsapp.net`). The JID is the one that is always
+    // there — a device paired by QR code never has `number` set.
+    const ownerJid = engine?.ownerJid ?? null;
+    const phoneNumber = engine?.number ?? (ownerJid ? jidToPhone(ownerJid) : null) ?? platformInstance.phoneNumber;
+
+    const statusChanged = status !== platformInstance.status;
+    const phoneChanged = phoneNumber !== null && phoneNumber !== platformInstance.phoneNumber;
+    const needsTimestamp = status === 'CONNECTED' && !platformInstance.lastConnectedAt;
+
+    if (statusChanged || phoneChanged || needsTimestamp) {
+      await platformRepository.platformInstance.update({
+        where: { id: instanceId },
+        data: {
+          status,
+          ...(phoneChanged ? { phoneNumber } : {}),
+          ...(needsTimestamp ? { lastConnectedAt: new Date() } : {}),
+        },
+      });
+      this.logger.log(
+        `Instance ${platformInstance.name} is ${status}${phoneChanged && phoneNumber ? ` (${phoneNumber})` : ''}`,
+      );
+    }
+
+    return status;
+  }
+
+  /**
+   * Reconcile every instance that has an engine row.
+   *
+   * A device can be paired while nobody is looking at the dashboard, and
+   * the socket can drop while the API is restarting. A periodic sweep
+   * means the platform's view of the world is never more than a few
+   * seconds behind the engine's.
+   */
+  async syncAllInstanceStatuses(): Promise<void> {
+    const instances = await platformRepository.platformInstance.findMany({
+      select: { id: true },
+    });
+    for (const instance of instances) {
+      try {
+        await this.syncInstanceStatus(instance.id);
+      } catch (error) {
+        this.logger.warn(`Could not sync the status of instance ${instance.id}: ${error}`);
+      }
+    }
   }
 
   /**

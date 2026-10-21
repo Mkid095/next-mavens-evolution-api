@@ -1,6 +1,7 @@
 import { antiBanService } from '@api/services/anti-ban.instance';
 import { Logger } from '@config/logger.config';
 
+import { evolutionAdapter } from './adapters/evolution.adapter';
 import { platformRouter } from './platform.router';
 import { platformRepository } from './repository/platform.repository';
 import { setSessionService } from './routes/auth.routes';
@@ -45,6 +46,29 @@ setSessionService(sessionService);
 outboxWorkerService.start();
 lifecycleEventWorker.start();
 webhookDeliveryWorker.start();
+
+/*
+ * Keep the platform's view of the instances in step with the engine's.
+ *
+ * The engine owns the truth about whether a WhatsApp device is
+ * connected. The platform row is a copy of that truth, and a copy that
+ * is only refreshed when somebody opens the right page is a copy that
+ * lies. A short sweep keeps it honest, and it is what makes a device
+ * paired while the dashboard was closed show up as connected.
+ */
+const INSTANCE_SYNC_INTERVAL_MS = 15_000;
+void (async () => {
+  // One sweep at boot, then on the interval.
+  const sweep = async () => {
+    try {
+      await evolutionAdapter.syncAllInstanceStatuses();
+    } catch (error) {
+      logger.warn(`Instance status sync failed: ${error}`);
+    }
+  };
+  await sweep();
+  setInterval(() => void sweep(), INSTANCE_SYNC_INTERVAL_MS);
+})();
 
 // Seed encrypted settings (company gate password) on a fresh database.
 // Fire-and-forget: a failure here must not stop the API from booting —

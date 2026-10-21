@@ -1,5 +1,6 @@
 import { prismaRepository } from '@api/server.module';
 import { Integration } from '@api/types/wa.types';
+import { configService, Database } from '@config/env.config';
 import { Logger } from '@config/logger.config';
 import crypto from 'crypto';
 
@@ -76,6 +77,10 @@ export class InstanceService {
           // Links the engine row to its owning account. The webhook route
           // checks this column to prove the caller owns the instance.
           platformAccountId: accountId,
+          // The client name is what the engine's boot-time restore matches
+          // on. A row without it is invisible to that restore, so the
+          // session would be dropped on every API restart.
+          clientName: configService.get<Database>('DATABASE').CONNECTION.CLIENT_NAME,
         },
       });
       this.logger.log(`Created Evolution Instance id=${evolutionInstance.id} name=${name}`);

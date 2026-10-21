@@ -107,6 +107,23 @@ function fail(code: number, message: string, data?: unknown): ToolOutcome {
  * key for.
  */
 async function resolveInstance(instanceId: string, projectId: string) {
+  const instance = await platformRepository.platformInstance.findFirst({
+    where: { publicId: instanceId, projectId },
+  });
+
+  // Reconcile the stored status with the live socket before the caller
+  // reads it. A device that was paired while the platform was not
+  // looking would otherwise be reported as never connected, and every
+  // tool that checks the status would refuse to use it.
+  if (instance) {
+    try {
+      await evolutionAdapter.syncInstanceStatus(instance.id);
+    } catch {
+      // A failed sync must not stop the tool from running — the row is
+      // still the best answer available.
+    }
+  }
+
   return platformRepository.platformInstance.findFirst({
     where: { publicId: instanceId, projectId },
   });

@@ -73,7 +73,29 @@ router.get(
         orderBy: { createdAt: 'desc' },
       });
 
-      res.json(instances.map(toInstanceDTO));
+      // Reconcile each instance with the live socket before answering.
+      // The stored status is a copy of what the engine knows, and the
+      // copy is what the dashboard shows — so it has to be right.
+      await Promise.all(
+        instances.map((instance) => evolutionAdapter.syncInstanceStatus(instance.id).catch(() => undefined)),
+      );
+
+      const fresh = await platformRepository.platformInstance.findMany({
+        where: { projectId: context.project.id },
+        select: {
+          id: true,
+          publicId: true,
+          name: true,
+          status: true,
+          phoneNumber: true,
+          capabilities: true,
+          lastConnectedAt: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      res.json(fresh.map(toInstanceDTO));
     } catch {
       res.status(500).json({ error: 'FETCH_ERROR' });
     }

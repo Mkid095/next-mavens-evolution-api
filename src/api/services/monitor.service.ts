@@ -220,6 +220,9 @@ export class WAMonitoringService {
 
   public async loadInstance() {
     try {
+      this.logger.log(
+        `Restoring instances (provider=${this.providerSession?.ENABLED}, saveData=${this.db.SAVE_DATA?.INSTANCE}, clientName=${this.configService.get<Database>('DATABASE').CONNECTION.CLIENT_NAME})`,
+      );
       if (this.providerSession?.ENABLED) {
         await this.loadInstancesFromProvider();
       } else if (this.db.SAVE_DATA.INSTANCE) {
@@ -384,7 +387,16 @@ export class WAMonitoringService {
     const clientName = await this.configService.get<Database>('DATABASE').CONNECTION.CLIENT_NAME;
 
     const instances = await this.prismaRepository.instance.findMany({
-      where: { clientName: clientName },
+      where: {
+        OR: [
+          { clientName: clientName },
+          // Rows the platform created carry no client name — it owns them
+          // through `platformAccountId` instead. Without this clause they
+          // were invisible to the restore, so every API restart dropped
+          // every session the platform had paired.
+          { clientName: null, platformAccountId: { not: null } },
+        ],
+      },
     });
 
     if (instances.length === 0) {
