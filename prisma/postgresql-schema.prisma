@@ -119,7 +119,6 @@ model Instance {
   platformStatus      String? @db.VarChar(50)
 
   platformAccount         PlatformAccount?         @relation(fields: [platformAccountId], references: [id])
-  platformApiKeyInstances PlatformApiKeyInstance[]
 }
 
 model Session {
@@ -894,7 +893,7 @@ model PlatformApiKeyInstance {
   instanceId String
 
   apiKey   PlatformApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
-  instance Instance       @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  instance PlatformInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
 
   @@unique([apiKeyId, instanceId])
   @@index([instanceId])
@@ -930,7 +929,7 @@ model PlatformMessageCommand {
   apiKeyId       String
   messageId      String       @db.VarChar(50)
   type           String       @db.VarChar(50)
-  recipient      String       @db.VarChar(20)
+  recipient      String       @db.VarChar(128)
   content        Json
   status         String       @default("queued")
   attempts       Int          @default(0)
@@ -964,6 +963,7 @@ model PlatformWebhook {
 
   account    PlatformAccount           @relation(fields: [accountId], references: [id])
   app        PlatformApp               @relation(fields: [appId], references: [id])
+  instance   PlatformInstance          @relation(fields: [instanceId], references: [id], onDelete: Cascade)
   deliveries PlatformWebhookDelivery[]
 
   @@index([accountId])
@@ -1013,6 +1013,8 @@ model PlatformInstance {
   lifecycleEvents InstanceEventLog[]
   contacts        PlatformContact[]
   groups          PlatformGroup[]
+  webhooks        PlatformWebhook[]
+  apiKeyBindings  PlatformApiKeyInstance[]
 
   @@unique([accountId, name])
   @@index([accountId])
@@ -1042,6 +1044,10 @@ model PlatformContact {
   appId           String    @db.VarChar(255)
   instanceId      String    @db.VarChar(255)
   phoneNumber     String    @db.VarChar(20)
+  /// The contact's WhatsApp address, e.g. 5511999999999@s.whatsapp.net.
+  jid             String?   @db.VarChar(100)
+  /// The contact's privacy-preserving LID, e.g. 123456789012345@lid.
+  lid             String?   @db.VarChar(100)
   displayName     String?
   profilePhotoUrl String?
   lastSeenAt      DateTime?

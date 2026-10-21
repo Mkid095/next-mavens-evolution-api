@@ -1,3 +1,4 @@
+import { antiBanService } from '@api/services/anti-ban.instance';
 import { Logger } from '@config/logger.config';
 
 import { platformRouter } from './platform.router';
@@ -27,7 +28,9 @@ const subscriptionService = new SubscriptionService();
 const rateLimitService = new RateLimitService();
 const entitlementService = new EntitlementService();
 const idempotencyService = new IdempotencyService();
-const outboxWorkerService = new OutboxWorkerService();
+// The outbox worker sends queued messages one at a time, paced per instance,
+// and consults the shared anti-ban guard before every send.
+const outboxWorkerService = new OutboxWorkerService({ antiBan: antiBanService });
 const lifecycleEventWorker = new LifecycleEventWorker();
 const webhookDeliveryWorker = new WebhookDeliveryWorker();
 const auditService = new AuditService();

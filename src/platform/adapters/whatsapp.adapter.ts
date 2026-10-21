@@ -19,6 +19,17 @@ export interface CanonicalContact {
   phoneNumber: string; // E.164
   displayName: string | null;
   profilePhotoUrl: string | null;
+  /**
+   * The contact's WhatsApp address (`5511999999999@s.whatsapp.net`).
+   * This is the identifier to use when addressing the contact.
+   */
+  jid: string | null;
+  /**
+   * The contact's LID (`123456789012345@lid`) — WhatsApp's privacy
+   * preserving identifier for the same person. Null when the contact
+   * has no known LID.
+   */
+  lid: string | null;
 }
 
 export interface CanonicalGroup {

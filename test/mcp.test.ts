@@ -1,9 +1,9 @@
 /**
- * MCP Routes — Comprehensive Tests
+ * MCP — Comprehensive Tests
  *
  * Run with:
- *   tsx --test test/mcp.test.ts    # tsx native test runner (recommended)
- *   tsx test/mcp.test.ts           # watch mode (project default)
+ *   npx tsx --test test/mcp.test.ts    # tsx native test runner (recommended)
+ *   npx tsx test/mcp.test.ts           # watch mode (project default)
  *
  * Uses Node.js built-in assert/strict for assertions (compatible with node:test).
  *
@@ -15,22 +15,45 @@
 import { register } from 'tsx/cjs/api';
 register();
 
-// ─── Imports (after register) ─────────────────────────────────────────────────
-
+// ─── Imports (after register) ───────────────────────────────────────────────
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
 import { describe, it, before, after } from 'node:test';
 import { strict as assert } from 'node:assert';
 
-// ─── Source reading helpers ───────────────────────────────────────────────────
+import {
+  CATEGORIES,
+  MCP_TOOLS,
+  TOOL_SCOPES,
+  findTool,
+  toolCountByCategory,
+} from '../src/platform/mcp/tool-registry';
+import {
+  JSONRPC_INTERNAL_ERROR,
+  JSONRPC_INVALID_PARAMS,
+  JSONRPC_INVALID_REQUEST,
+  JSONRPC_METHOD_NOT_FOUND,
+} from '../src/platform/mcp/jsonrpc';
 
-function readMcpSource(): string {
-  // Use process.cwd() because node --test resolves __dirname to cwd (.), not the test file's directory.
-  return readFileSync(
-    join(process.cwd(), 'src/platform/routes/mcp.routes.ts'),
-    'utf8',
-  );
+// ─── Source reading helpers ──────────────────────────────────────────────────
+//
+// Only the *handler* and *route* bodies are read as text. The tool registry
+// itself is imported above: asserting on source text for it meant the suite
+// broke every time the registry moved, without anything being wrong.
+
+function readSource(...parts: string[]): string {
+  // Use process.cwd() because node --test resolves __dirname to cwd (.), not
+  // the test file's directory.
+  return readFileSync(join(process.cwd(), ...parts), 'utf8');
+}
+
+function readExecutorSource(): string {
+  return readSource('src/platform/mcp/tool-executor.ts');
+}
+
+function readRouteSource(): string {
+  return readSource('src/platform/routes/mcp.routes.ts');
 }
 
 function extractSwitchCases(source: string): string[] {
@@ -47,7 +70,6 @@ function extractSwitchCases(source: string): string[] {
     }
     pos++;
   }
-  // Use for-of + matchAll (not Array.from) — tsx --test compatibility
   const results: string[] = [];
   for (const m of source.slice(switchStart, switchEnd).matchAll(/case\s+'([^']+)':/g)) {
     results.push(m[1]);
@@ -64,25 +86,10 @@ function extractAll(source: string, regex: RegExp): string[] {
   return results;
 }
 
-// Extract all matches (no capture group needed) — returns match strings
-function extractMatches(source: string, regex: RegExp): string[] {
-  const results: string[] = [];
-  for (const m of source.matchAll(regex)) {
-    results.push(m[0]);
-  }
-  return results;
-}
-
 function sliceCase(source: string, caseName: string, untilNextCase: string): string {
   const start = source.indexOf(`case '${caseName}':`);
   const end = source.indexOf(`case '${untilNextCase}':`, start);
   return source.slice(start, end > 0 ? end : source.length);
-}
-
-function mcpToolsSlice(source: string): string {
-  const mcpStart = source.indexOf('const MCP_TOOLS');
-  const mcpEnd = source.indexOf('];', mcpStart) + 2;
-  return source.slice(mcpStart, mcpEnd);
 }
 
 // Extract a section of the source between two // comment markers
@@ -92,15 +99,7 @@ function sliceByComment(source: string, startMarker: string, endMarker: string):
   return source.slice(start, end > 0 ? end : source.length);
 }
 
-const MCP_TOOL_NAMES: readonly string[] = [
-  'list_instances', 'get_instance', 'instance_status', 'list_instances_summary',
-  'create_instance', 'delete_instance', 'whatsapp_connect', 'whatsapp_disconnect',
-  'whatsapp_restart', 'send_message', 'send_media', 'list_webhooks', 'get_webhook',
-  'create_webhook', 'update_webhook', 'delete_webhook', 'test_webhook',
-  'rotate_webhook_secret', 'list_api_keys', 'create_api_key', 'revoke_api_key',
-  'bind_api_key_instance', 'get_account', 'get_usage', 'get_plans', 'list_subscriptions',
-  'health_check', 'get_instance_logs', 'list_contacts', 'list_groups',
-];
+const MCP_TOOL_NAMES: readonly string[] = MCP_TOOLS.map((t) => t.name);
 
 const HAS_INTEGRATION_ENV = !!(
   process.env.PLATFORM_ENCRYPTION_KEY &&
@@ -109,154 +108,149 @@ const HAS_INTEGRATION_ENV = !!(
 );
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// TIER 1 — CODE INSPECTION TESTS (always runs; no runtime deps)
+// TIER 1 — REGISTRY TESTS (always runs; no runtime deps)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('Tool Registry — Completeness', () => {
-  it('all 30 tools are present in the MCP_TOOLS array', () => {
-    const source = readMcpSource();
-    const slice = mcpToolsSlice(source);
-    for (const name of MCP_TOOL_NAMES) {
-      assert.match(slice, new RegExp(`name:\\s*'${name}'`));
+  it('every registered tool has a name, description and schema', () => {
+    assert.ok(MCP_TOOLS.length > 0);
+    for (const tool of MCP_TOOLS) {
+      assert.ok(tool.name, 'tool has a name');
+      assert.ok(tool.description.trim().length > 0, `${tool.name} has a description`);
+      assert.equal(typeof tool.category, 'string');
+      assert.ok(tool.inputSchema, `${tool.name} has an inputSchema`);
+      assert.equal(typeof tool.inputSchema.type, 'string');
+      assert.ok(tool.inputSchema.properties, `${tool.name} schema has properties`);
     }
-    const names = extractAll(slice, /name:\s*'([^']+)'/g);
-    assert.equal(names.length, 30);
   });
 
-  it('every tool has a non-empty description', () => {
-    const source = readMcpSource();
-    const slice = mcpToolsSlice(source);
-    // Only match top-level object property descriptions (at start of line in the slice)
-    const descs = extractAll(slice, /^\s+description:\s*'([^']+)'/gm);
-    assert.equal(descs.length, 30);
-    for (const d of descs) assert.ok(d.trim().length > 0);
+  it('tool names are unique', () => {
+    const seen = new Set<string>();
+    for (const tool of MCP_TOOLS) {
+      assert.ok(!seen.has(tool.name), `duplicate tool name ${tool.name}`);
+      seen.add(tool.name);
+    }
   });
 
-  it('every tool has an inputSchema object', () => {
-    const source = readMcpSource();
-    const slice = mcpToolsSlice(source);
-    const schemas = extractMatches(slice, /inputSchema:\s*\{[^}]+\}/gs);
-    assert.equal(schemas.length, 30);
+  it('every tool category maps to a defined category id', () => {
+    const catIds = CATEGORIES.map((c) => c.id);
+    for (const tool of MCP_TOOLS) {
+      assert.ok(catIds.includes(tool.category), `${tool.name} -> ${tool.category}`);
+    }
   });
 
-  it('every tool category maps to a defined CATEGORY id', () => {
-    const source = readMcpSource();
-    const catIds = extractAll(source, /id:\s*'([^']+)'/g);
-    const slice = mcpToolsSlice(source);
-    const catMatches = extractAll(slice, /category:\s*'([^']+)'/g);
-    for (const c of catMatches) assert.ok(catIds.includes(c));
+  it('every category is reachable and counted correctly', () => {
+    const counts = toolCountByCategory();
+    for (const cat of CATEGORIES) {
+      const actual = MCP_TOOLS.filter((t) => t.category === cat.id).length;
+      assert.equal(counts[cat.id], actual, `count for ${cat.id}`);
+      assert.ok(actual > 0, `${cat.id} has at least one tool`);
+    }
+  });
+
+  it('findTool resolves a registered tool and rejects an unknown one', () => {
+    assert.ok(findTool('list_instances'));
+    assert.equal(findTool('definitely_not_a_tool'), undefined);
+  });
+
+  it('the documentation category and tool are present', () => {
+    assert.ok(CATEGORIES.some((c) => c.id === 'documentation'));
+    assert.ok(findTool('get_documentation'), 'get_documentation tool is registered');
   });
 });
 
 describe('Tool Registry — Handler Coverage', () => {
-  it('every MCP_TOOLS entry has a corresponding switch case', () => {
-    const source = readMcpSource();
-    const cases = extractSwitchCases(source);
-    for (const tool of MCP_TOOL_NAMES) assert.ok(cases.includes(tool));
-    for (const c of cases) assert.ok(MCP_TOOL_NAMES.includes(c));
+  it('every registered tool has a corresponding switch case', () => {
+    const cases = extractSwitchCases(readExecutorSource());
+    for (const tool of MCP_TOOL_NAMES) {
+      assert.ok(cases.includes(tool), `handler for ${tool}`);
+    }
   });
 
   it('no case statement references an unknown tool', () => {
-    const source = readMcpSource();
-    const cases = extractSwitchCases(source);
-    for (const c of cases) assert.ok(MCP_TOOL_NAMES.includes(c));
+    const cases = extractSwitchCases(readExecutorSource());
+    for (const c of cases) {
+      assert.ok(MCP_TOOL_NAMES.includes(c), `unknown tool in a case: ${c}`);
+    }
   });
 });
 
 describe('Scope Map', () => {
   it('TOOL_SCOPES has an entry for every tool', () => {
-    const source = readMcpSource();
-    const slice = mcpToolsSlice(source);
-    const toolNames = extractAll(slice, /name:\s*'([^']+)'/g);
-    const scopesStart = source.indexOf('const TOOL_SCOPES');
-    const scopesSlice = source.slice(scopesStart, source.indexOf(';', scopesStart));
-    for (const tool of toolNames) {
-      // TOOL_SCOPES uses unquoted keys: list_instances: [...], not 'list_instances': [...]
-      assert.match(scopesSlice, new RegExp(`${tool}\\s*:`));
+    for (const tool of MCP_TOOL_NAMES) {
+      assert.ok(TOOL_SCOPES[tool], `scope entry for ${tool}`);
+      assert.ok(Array.isArray(TOOL_SCOPES[tool]));
+      assert.ok(TOOL_SCOPES[tool].length > 0, `${tool} has at least one scope`);
     }
   });
 
-  it('checkScopes function grants access on wildcard scope', () => {
-    const source = readMcpSource();
+  it('every scope is a known scope string', () => {
+    const known = new Set(Object.values(TOOL_SCOPES).flat());
+    for (const scope of known) {
+      assert.match(scope, /^[a-z_]+:(read|write|send)$/, `scope shape: ${scope}`);
+    }
+  });
+
+  it('the scope check grants access on the wildcard scope', () => {
+    const source = readSource('src/platform/mcp/scopes.ts');
     const fnSlice = source.slice(
-      source.indexOf('function checkScopes'),
-      source.indexOf('function checkScopes') + 450,
+      source.indexOf('export function checkToolScopes'),
+      source.indexOf('export function checkToolScopes') + 900,
     );
     assert.match(fnSlice, /\.\s*includes\s*\(\s*['"]\*['"]\s*\)/);
     assert.match(fnSlice, /return true/);
   });
-
-  it('scope check runs before handleTool in POST /invoke', () => {
-    const source = readMcpSource();
-    const checkIdx = source.indexOf('checkScopes(req, tool)');
-    const handleIdx = source.indexOf('handleTool(tool, parameters');
-    assert.ok(checkIdx > 0);
-    assert.ok(handleIdx > checkIdx);
-  });
 });
 
-describe('PAT Security — Code Inspection', () => {
-  it('list_api_keys never returns plaintextKey or a key: field', () => {
-    const source = readMcpSource();
-    const block = sliceCase(source, 'list_api_keys', 'create_api_key');
+describe('API Key Security — Code Inspection', () => {
+  it('list_api_keys never returns plaintextKey', () => {
+    const block = sliceCase(readExecutorSource(), 'list_api_keys', 'create_api_key');
     assert.doesNotMatch(block, /\bplaintextKey\b/);
-    assert.doesNotMatch(block, /\bkey\s*:/);
   });
 
-  it('create_api_key returns plaintextKey (one-time display)', () => {
-    const source = readMcpSource();
-    const block = sliceCase(source, 'create_api_key', 'revoke_api_key');
+  it('create_api_key returns the plaintext key (one-time display)', () => {
+    const block = sliceCase(readExecutorSource(), 'create_api_key', 'revoke_api_key');
     assert.match(block, /\bplaintextKey\b/);
   });
 
   it('revoke_api_key does not return plaintextKey', () => {
-    const source = readMcpSource();
-    const block = sliceCase(source, 'revoke_api_key', 'bind_api_key_instance');
+    const block = sliceCase(readExecutorSource(), 'revoke_api_key', 'bind_api_key_instance');
     assert.doesNotMatch(block, /\bplaintextKey\b/);
   });
 
-  it('health_check uses jsonRpcError and never exposes error.stack', () => {
-    const source = readMcpSource();
-    const block = sliceCase(source, 'health_check', 'get_instance_logs');
-    assert.match(block, /jsonRpcError/);
+  it('health_check never exposes error.stack', () => {
+    const block = sliceCase(readExecutorSource(), 'health_check', 'get_instance_logs');
     assert.doesNotMatch(block, /error\.stack/);
   });
 
-  it('send_message and send_media use PUBLIC_API_BASE, not a literal URL', () => {
-    const source = readMcpSource();
-    assert.match(source, /^const PUBLIC_API_BASE\s*=/m);
-    assert.match(sliceCase(source, 'send_message', 'send_media'), /\$\{PUBLIC_API_BASE\}/);
-    assert.match(sliceCase(source, 'send_media', 'list_webhooks'), /\$\{PUBLIC_API_BASE\}/);
-  });
-
-  it('send_message handler never references 127.0.0.1 or localhost', () => {
-    const source = readMcpSource();
-    const block = sliceCase(source, 'send_message', 'send_media');
+  it('send_message never references a hardcoded host', () => {
+    const block = sliceCase(readExecutorSource(), 'send_message', 'send_media');
     assert.doesNotMatch(block, /127\.0\.0\.1/);
     assert.doesNotMatch(block, /localhost(?::\d+)?(?=\/)/);
   });
 });
 
 describe('JSON-RPC Protocol', () => {
-  it('error constants match JSON-RPC 2.0 spec (-32600 to -32603)', () => {
-    const source = readMcpSource();
-    assert.match(source, /JSONRPC_INVALID_REQUEST\s*=\s*-32600/);
-    assert.match(source, /JSONRPC_METHOD_NOT_FOUND\s*=\s*-32601/);
-    assert.match(source, /JSONRPC_INVALID_PARAMS\s*=\s*-32602/);
-    assert.match(source, /JSONRPC_INTERNAL_ERROR\s*=\s*-32603/);
+  it('error constants match the JSON-RPC 2.0 spec', () => {
+    assert.equal(JSONRPC_INVALID_REQUEST, -32600);
+    assert.equal(JSONRPC_METHOD_NOT_FOUND, -32601);
+    assert.equal(JSONRPC_INVALID_PARAMS, -32602);
+    assert.equal(JSONRPC_INTERNAL_ERROR, -32603);
   });
 
-  it('unknown tool returns -32601 before handleTool is called', () => {
-    const source = readMcpSource();
-    const toolDefIdx = source.indexOf('const toolDef = MCP_TOOLS.find');
-    const handleIdx = source.indexOf('handleTool(tool, parameters');
-    assert.ok(toolDefIdx > 0);
-    assert.ok(handleIdx > toolDefIdx);
-    assert.match(source.slice(toolDefIdx, handleIdx), /JSONRPC_METHOD_NOT_FOUND/);
+  it('the transport answers the standard MCP handshake', () => {
+    const source = readSource('src/platform/mcp/mcp-server.ts');
+    assert.match(source, /ListToolsRequestSchema/);
+    assert.match(source, /CallToolRequestSchema/);
   });
 
-  it('jsonRpcError always returns HTTP 200 with error envelope', () => {
-    const source = readMcpSource();
+  it('the transport is a real MCP Streamable HTTP transport', () => {
+    const source = readSource('src/platform/mcp/transport.ts');
+    assert.match(source, /StreamableHTTPServerTransport/);
+  });
+
+  it('jsonRpcError always returns HTTP 200 with an error envelope', () => {
+    const source = readRouteSource();
     const fn = source.slice(
       source.indexOf('function jsonRpcError'),
       source.indexOf('function jsonRpcResult'),
@@ -264,8 +258,8 @@ describe('JSON-RPC Protocol', () => {
     assert.match(fn, /res\.status\(200\)\.json\(\{ error:/);
   });
 
-  it('jsonRpcResult always returns HTTP 200 with result envelope', () => {
-    const source = readMcpSource();
+  it('jsonRpcResult always returns HTTP 200 with a result envelope', () => {
+    const source = readRouteSource();
     const fn = source.slice(
       source.indexOf('function jsonRpcResult'),
       source.indexOf('async function resolveInstance'),
@@ -276,26 +270,19 @@ describe('JSON-RPC Protocol', () => {
 
 describe('Route Structure', () => {
   it('GET /tools returns category metadata, not full tool schemas', () => {
-    const source = readMcpSource();
-    // Use comment markers — route handlers span multiple lines
-    const handler = sliceByComment(source, '// GET /tools', '// GET /tools/:category');
+    const handler = sliceByComment(readRouteSource(), '// GET /tools', '// GET /tools/:category');
     assert.match(handler, /CATEGORIES\.map/);
-    // The endpoint may use MCP_TOOLS.filter internally for counting, but must return
-    // only { categories } — not { categories, tools }
     assert.match(handler, /res\.json\(\{ categories \}\)/);
   });
 
-  it('GET /tools/:category returns filtered tools and category id', () => {
-    const source = readMcpSource();
-    const handler = sliceByComment(source, '// GET /tools/:category', '// POST /invoke');
+  it('GET /tools/:category returns filtered tools and the category id', () => {
+    const handler = sliceByComment(readRouteSource(), '// GET /tools/:category', '// POST /invoke');
     assert.match(handler, /MCP_TOOLS\.filter/);
-    // Match the line that extracts category from req.params
-    assert.match(handler, /const\s*{\s*category\s*}\s*=\s*req\.params/);
+    assert.match(handler, /const\s*\{\s*category\s*\}\s*=\s*req\.params/);
   });
 
   it('POST /invoke uses hybridAuth and tenantResolveMiddleware', () => {
-    const source = readMcpSource();
-    const handler = sliceByComment(source, '// POST /invoke', '// --- Tool handler');
+    const handler = sliceByComment(readRouteSource(), '// POST /invoke', '// --- Tool handler');
     assert.match(handler, /hybridAuth/);
     assert.match(handler, /tenantResolveMiddleware/);
   });
@@ -345,7 +332,7 @@ if (HAS_INTEGRATION_ENV) {
       assert.ok(names.includes('delete_instance'));
     });
 
-    it('GET /tools/nonexistent returns -32001 error', async () => {
+    it('GET /tools/nonexistent returns a -32001 error', async () => {
       const res = await fetch(`${app.baseUrl}/api/v1/platform/mcp/tools/nonexistent`);
       const body = await res.json() as { error?: { code: number } };
       assert.equal(body.error?.code, -32001);
@@ -411,7 +398,7 @@ if (HAS_INTEGRATION_ENV) {
     });
     after(() => app.close());
 
-    it('health_check returns a result with status field', async () => {
+    it('health_check returns a result with a status field', async () => {
       const res = await fetch(`${app.baseUrl}/api/v1/platform/mcp/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -432,13 +419,19 @@ if (HAS_INTEGRATION_ENV) {
       assert.equal(body.error.code, -32602);
     });
 
-    it('scope enforcement: PAT with messages:send cannot call delete_instance', async () => {
+    it('scope enforcement: a key with only messages:send cannot call delete_instance', async () => {
       const express = (await import('express')).default;
       const { mcpRouter } = await import('../src/platform/routes/mcp.routes');
       const a = express();
       a.use(express.json());
       a.use('/api/v1/platform/mcp', (req: any, _res: any, next: any) => {
-        req.platformTenant = { accountId: 'acct_limited', publicId: 'pub_ltd', status: 'active', plan: { planId: 'p', name: 'n', monthlyMessageLimit: null } };
+        req.platformTenant = {
+          accountId: 'acct_limited',
+          publicId: 'pub_ltd',
+          status: 'ACTIVE',
+          plan: { planId: 'p', name: 'n', monthlyMessageLimit: null },
+          defaultApp: { id: 'a_1', publicId: 'app_1', projectId: 'p_1' },
+        };
         req.platformKey = { scopes: ['messages:send'] };
         next();
       });

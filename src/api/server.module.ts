@@ -25,12 +25,13 @@ import { S3Service } from './integrations/storage/s3/services/s3.service';
 import { ProviderFiles } from './provider/sessions';
 import { PrismaRepository } from './repository/repository.service';
 import { AnalyticsService } from './services/analytics.service';
-import { AntiBanService } from './services/anti-ban.service';
-import { BlockTrackerService } from './services/block-tracker.service';
+// Anti-Ban Services (Next Mavens Fidscript - Account Protection)
+// The stack itself lives in ./services/anti-ban.instance so that the platform
+// module can share the very same rate-limit / suppression state without
+// creating an api <-> platform import cycle.
+import { antiBanService } from './services/anti-ban.instance';
 import { CacheService } from './services/cache.service';
 import { CampaignService } from './services/campaign.service';
-import { QualityMonitorService } from './services/quality-monitor.service';
-import { RateLimiterService } from './services/rate-limiter.service';
 import { WAMonitoringService } from './services/monitor.service';
 import { ProxyService } from './services/proxy.service';
 import { SettingsService } from './services/settings.service';
@@ -65,18 +66,7 @@ export const templateController = new TemplateController(templateService);
 
 const proxyService = new ProxyService(waMonitor);
 export const proxyController = new ProxyController(proxyService, waMonitor);
-
-// Anti-Ban Services (Next Mavens Fidscript - Account Protection)
-const rateLimiterService = new RateLimiterService(cache, prismaRepository, configService);
-const qualityMonitorService = new QualityMonitorService(cache, prismaRepository, configService);
-const blockTrackerService = new BlockTrackerService(cache, prismaRepository, configService);
-export const antiBanService = new AntiBanService(
-  rateLimiterService,
-  qualityMonitorService,
-  blockTrackerService,
-  cache,
-  configService,
-);
+export { antiBanService };
 
 // Campaign Service (Next Mavens Fidscript - Bulk Messaging)
 const campaignService = new CampaignService(cache, configService);

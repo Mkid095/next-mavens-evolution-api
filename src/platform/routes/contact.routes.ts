@@ -36,6 +36,8 @@ router.get(
         select: {
           publicId: true,
           phoneNumber: true,
+          jid: true,
+          lid: true,
           displayName: true,
           profilePhotoUrl: true,
           lastSeenAt: true,
@@ -101,10 +103,14 @@ router.post(
             appId: platformTenant.defaultApp.id,
             instanceId: instance.id,
             phoneNumber: contact.phoneNumber,
+            jid: contact.jid,
+            lid: contact.lid,
             displayName: contact.displayName,
             profilePhotoUrl: contact.profilePhotoUrl,
           },
           update: {
+            jid: contact.jid ?? undefined,
+            lid: contact.lid ?? undefined,
             displayName: contact.displayName ?? undefined,
             profilePhotoUrl: contact.profilePhotoUrl ?? undefined,
           },

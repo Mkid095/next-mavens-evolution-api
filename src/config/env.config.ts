@@ -442,13 +442,30 @@ export type Platform = {
   ENABLED: boolean;
   ENCRYPTION_KEY: string;
   PUBLIC_API_BASE: string;
+  /**
+   * Origin of the public documentation site. The MCP documentation tool
+   * fetches the page bodies from `${DOCS_BASE_URL}/docs/<slug>`.
+   */
+  DOCS_BASE_URL: string;
   IDEMPOTENCY_TTL_SECONDS: number;
   WEBHOOK_TIMEOUT_MS: number;
   WEBHOOK_MAX_RETRIES: number;
   WEBHOOK_RETRY_BASE_DELAY_MS: number;
+  WEBHOOK_POLL_INTERVAL_MS: number;
   OUTBOX_POLL_INTERVAL_MS: number;
   OUTBOX_BATCH_SIZE: number;
   OUTBOX_MAX_RETRIES: number;
+  /**
+   * Minimum gap between two outbound sends on the SAME instance.
+   * The outbox worker sleeps for (SEND_INTERVAL_MS + random()*JITTER_MS)
+   * between two sends of the same instance, so the traffic pattern never
+   * looks like a metronome.
+   */
+  OUTBOX_SEND_INTERVAL_MS: number;
+  /** Random extra delay added to every gap (0 .. JITTER_MS). */
+  OUTBOX_JITTER_MS: number;
+  /** Per-instance ceiling on sends per minute. */
+  OUTBOX_MAX_PER_MINUTE: number;
   INTERNAL_API_KEY: string;
 };
 
@@ -1002,13 +1019,22 @@ export class ConfigService {
         ENABLED: process.env.PLATFORM_ENABLED === 'true',
         ENCRYPTION_KEY: process.env.PLATFORM_ENCRYPTION_KEY || '',
         PUBLIC_API_BASE: process.env.PUBLIC_API_BASE || 'https://whatsapp.nextmavens.com/api/v1',
+        // Origin of the docs site — defaults to the origin of PUBLIC_API_BASE
+        // (…/api/v1 stripped), e.g. https://whatsapp.nextmavens.com
+        DOCS_BASE_URL:
+          process.env.DOCS_BASE_URL ||
+          (process.env.PUBLIC_API_BASE || 'https://whatsapp.nextmavens.com/api/v1').replace(/\/api\/v1\/?$/, ''),
         IDEMPOTENCY_TTL_SECONDS: Number.parseInt(process.env.PLATFORM_IDEMPOTENCY_TTL_SECONDS || '86400'),
-        WEBHOOK_TIMEOUT_MS: Number.parseInt(process.env.PLATFORM_WEBHOOK_TIMEOUT_MS || '5000'),
+        WEBHOOK_TIMEOUT_MS: Number.parseInt(process.env.PLATFORM_WEBHOOK_TIMEOUT_MS || '30000'),
         WEBHOOK_MAX_RETRIES: Number.parseInt(process.env.PLATFORM_WEBHOOK_MAX_RETRIES || '5'),
         WEBHOOK_RETRY_BASE_DELAY_MS: Number.parseInt(process.env.PLATFORM_WEBHOOK_RETRY_BASE_DELAY_MS || '1000'),
-        OUTBOX_POLL_INTERVAL_MS: Number.parseInt(process.env.PLATFORM_OUTBOX_POLL_INTERVAL_MS || '1000'),
-        OUTBOX_BATCH_SIZE: Number.parseInt(process.env.PLATFORM_OUTBOX_BATCH_SIZE || '10'),
-        OUTBOX_MAX_RETRIES: Number.parseInt(process.env.PLATFORM_OUTBOX_MAX_RETRIES || '3'),
+        WEBHOOK_POLL_INTERVAL_MS: Number.parseInt(process.env.PLATFORM_WEBHOOK_POLL_INTERVAL_MS || '5000'),
+        OUTBOX_POLL_INTERVAL_MS: Number.parseInt(process.env.PLATFORM_OUTBOX_POLL_INTERVAL_MS || '5000'),
+        OUTBOX_BATCH_SIZE: Number.parseInt(process.env.PLATFORM_OUTBOX_BATCH_SIZE || '20'),
+        OUTBOX_MAX_RETRIES: Number.parseInt(process.env.PLATFORM_OUTBOX_MAX_RETRIES || '5'),
+        OUTBOX_SEND_INTERVAL_MS: Number.parseInt(process.env.PLATFORM_OUTBOX_SEND_INTERVAL_MS || '1500'),
+        OUTBOX_JITTER_MS: Number.parseInt(process.env.PLATFORM_OUTBOX_JITTER_MS || '750'),
+        OUTBOX_MAX_PER_MINUTE: Number.parseInt(process.env.PLATFORM_OUTBOX_MAX_PER_MINUTE || '60'),
         INTERNAL_API_KEY: process.env.PLATFORM_INTERNAL_API_KEY || '',
       },
     };

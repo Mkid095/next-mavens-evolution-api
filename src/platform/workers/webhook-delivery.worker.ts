@@ -1,3 +1,4 @@
+import { configService, Platform } from '@config/env.config';
 import { Logger } from '@config/logger.config';
 import crypto from 'crypto';
 
@@ -8,17 +9,27 @@ import { WebhookService } from '../services/webhook.service';
  * Webhook Delivery Worker
  * Processes pending webhook deliveries with HTTP POST + retry + backoff.
  * Uses synthetic test events in Phase 1.
+ *
+ * Timing is driven by the PLATFORM_WEBHOOK_* environment variables
+ * (see src/config/env.config.ts) — nothing is hardcoded here.
  */
 export class WebhookDeliveryWorker {
   private readonly logger = new Logger('WebhookDeliveryWorker');
   private readonly webhookService: WebhookService;
   private running = false;
-  private pollIntervalMs = 5000;
-  private maxRetries = 5;
-  private baseDelayMs = 1000;
+  private readonly pollIntervalMs: number;
+  private readonly maxRetries: number;
+  private readonly baseDelayMs: number;
+  private readonly timeoutMs: number;
 
   constructor() {
     this.webhookService = new WebhookService();
+
+    const platform = configService.get<Platform>('PLATFORM');
+    this.pollIntervalMs = platform?.WEBHOOK_POLL_INTERVAL_MS ?? 5000;
+    this.maxRetries = platform?.WEBHOOK_MAX_RETRIES ?? 5;
+    this.baseDelayMs = platform?.WEBHOOK_RETRY_BASE_DELAY_MS ?? 1000;
+    this.timeoutMs = platform?.WEBHOOK_TIMEOUT_MS ?? 30000;
   }
 
   /**
@@ -124,16 +135,42 @@ export class WebhookDeliveryWorker {
       return;
     }
 
-    // Build payload
-    const payload = { eventId: delivery.eventId, deliveryId: delivery.deliveryId };
-    const payloadStr = JSON.stringify(payload);
+    // Build the payload.
+    //
+    // A consumer needs to know what happened, to which instance, and
+    // when — the two opaque ids on their own tell them nothing. The
+    // event type and the event body live on the InstanceEventLog row
+    // the delivery points at.
+    const event = await platformRepository.instanceEventLog.findFirst({
+      where: { publicId: delivery.eventId },
+      select: { eventType: true, payload: true, instanceId: true, createdAt: true },
+    });
+    const instance = event?.instanceId
+      ? await platformRepository.platformInstance.findUnique({
+          where: { id: event.instanceId },
+          select: { publicId: true },
+        })
+      : null;
+
     const timestamp = Math.floor(Date.now() / 1000);
+    const payload = {
+      event: event?.eventType ?? 'UNKNOWN',
+      instanceId: instance?.publicId ?? null,
+      eventId: delivery.eventId,
+      deliveryId: delivery.deliveryId,
+      timestamp,
+      data: event?.payload ?? {},
+    };
+    const payloadStr = JSON.stringify(payload);
     const signature = this.webhookService.signPayload(payloadStr, timestamp, secret);
 
-    // Build headers matching what the WebhookService produces
+    // Build headers matching what the WebhookService produces.
+    // signPayload() already returns the `sha256=<hex>` form — prefixing
+    // it again produced `sha256=sha256=<hex>`, which no consumer
+    // verifying against the documented scheme could match.
     const headers = {
       'Content-Type': 'application/json',
-      'X-Fidscript-Signature': `sha256=${signature}`,
+      'X-Fidscript-Signature': signature,
       'X-Fidscript-Timestamp': String(timestamp),
       'X-Fidscript-Webhook-Id': delivery.eventId,
       'X-Fidscript-Delivery-Id': delivery.deliveryId,
@@ -145,7 +182,7 @@ export class WebhookDeliveryWorker {
         method: 'POST',
         headers,
         body: payloadStr,
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(this.timeoutMs),
       });
 
       if (response.ok) {

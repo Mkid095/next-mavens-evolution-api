@@ -42,14 +42,19 @@ const auditService = new AuditService();
 
 /**
  * Full middleware chain for authenticated platform routes.
- * Order: platformAuth → tenantResolve → idempotency → scopeEnforce → rateLimit → entitlement
+ * Order: platformAuth → tenantResolve → idempotency → scopeEnforce → rateLimit
+ *
+ * The message quota is NOT checked here. This chain serves the account,
+ * user, API-key, project, app, contact, group and webhook routes — none of
+ * which send a WhatsApp message. Gating them on the quota meant that once
+ * an account spent its monthly allowance every *read* answered 402, and an
+ * account with no plan at all was locked out of reading anything.
  */
 const middlewareChain = [
   platformAuthMiddleware.authenticate,
   tenantResolveMiddleware.resolve,
   scopeEnforceMiddleware.enforce,
   platformRateLimitMiddleware.apply,
-  entitlementMiddleware.checkMessageLimit,
 ];
 
 /**

@@ -32,9 +32,12 @@ export class EntitlementMiddleware {
     try {
       const result = await this.entitlementService.checkMessageLimit(platformTenant.accountId);
 
-      res.setHeader('X-Message-Limit', result.limit);
-      res.setHeader('X-Message-Current', result.current);
-      res.setHeader('X-Message-Remaining', Math.max(0, result.limit - result.current));
+      // An uncapped account has no meaningful limit to report.
+      if (result.limit >= 0) {
+        res.setHeader('X-Message-Limit', result.limit);
+        res.setHeader('X-Message-Current', result.current);
+        res.setHeader('X-Message-Remaining', Math.max(0, result.limit - result.current));
+      }
 
       if (!result.allowed) {
         res.status(402).json({

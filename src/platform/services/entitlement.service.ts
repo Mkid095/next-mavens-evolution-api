@@ -3,6 +3,13 @@ import { Logger } from '@config/logger.config';
 import { platformRepository } from '../repository/platform.repository';
 
 /**
+ * Sentinel for "no cap". A plan's `monthlyMessageLimit` is a ceiling, and
+ * a ceiling of zero is not a real ceiling — an account with no plan, or a
+ * plan without a limit, can send without restriction.
+ */
+export const UNLIMITED = -1;
+
+/**
  * Entitlement Service
  * Checks whether an account is allowed to perform operations based on their plan.
  */
@@ -42,10 +49,22 @@ export class EntitlementService {
       include: { plan: true },
     });
 
-    if (!subscription) return { allowed: false, current: 0, limit: 0 };
+    if (!subscription) {
+      // No plan means no cap. The platform is an internal, free service —
+      // a plan is a safety valve, not a billing gate, so an account
+      // without one must not be locked out.
+      return { allowed: true, current: usage?.quantity ?? 0, limit: UNLIMITED };
+    }
 
     const monthlyLimit = (subscription.plan as { monthlyMessageLimit?: number })?.monthlyMessageLimit ?? 0;
     const current = usage?.quantity ?? 0;
+
+    // A plan with no explicit limit is also uncapped. `monthlyLimit` of 0
+    // here would otherwise mean "no messages at all".
+    if (monthlyLimit <= 0) {
+      return { allowed: true, current, limit: UNLIMITED };
+    }
+
     return { allowed: current < monthlyLimit, current, limit: monthlyLimit };
   }
 

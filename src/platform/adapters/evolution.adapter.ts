@@ -18,6 +18,7 @@ import { InstanceDto } from '@api/dto/instance.dto';
 import { prismaRepository, waMonitor } from '@api/server.module';
 import { Integration } from '@api/types/wa.types';
 import { Logger } from '@config/logger.config';
+import { getOnWhatsappCache } from '@utils/onWhatsappCache';
 import crypto from 'crypto';
 
 import { platformRepository } from '../repository/platform.repository';
@@ -307,13 +308,37 @@ export class EvolutionAdapter implements IWhatsAppAdapter {
     // Fetch from Baileys via the service
     const contacts = (await (service as any).fetchContacts?.()) ?? [];
 
+    // Resolve the LID for each contact. WhatsApp addresses a person by
+    // a JID (the phone number) and, increasingly, by a LID (a privacy
+    // preserving alias for the same person). The engine's contact
+    // table only holds the JID, so the LID comes from the on-WhatsApp
+    // cache, which records both identifiers for a contact.
+    const remoteJids = contacts
+      .map((contact: any) => contact.remoteJid)
+      .filter((jid: unknown): jid is string => typeof jid === 'string' && jid.length > 0);
+    const lidByJid = new Map<string, string>();
+    try {
+      const cached = await getOnWhatsappCache(remoteJids);
+      for (const entry of cached) {
+        const lidOption = entry.jidOptions?.find((option) => option.endsWith('@lid'));
+        const lid = lidOption ?? (entry.lid ? entry.remoteJid : null);
+        if (lid) lidByJid.set(entry.remoteJid, lid);
+      }
+    } catch {
+      // The cache is a best-effort enrichment; a contact without a LID
+      // is still a usable contact.
+    }
+
     return contacts.map((contact: any) => {
-      const phone = jidToPhone(contact.remoteJid ?? '');
+      const jid = typeof contact.remoteJid === 'string' ? contact.remoteJid : null;
+      const phone = jid ? jidToPhone(jid) : '';
       return {
         id: generatePublicId('cnt'),
         phoneNumber: phone,
         displayName: contact.pushName ?? null,
         profilePhotoUrl: contact.profilePicUrl ?? null,
+        jid,
+        lid: jid ? (lidByJid.get(jid) ?? null) : null,
       };
     });
   }
