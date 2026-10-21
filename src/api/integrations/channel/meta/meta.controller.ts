@@ -1,10 +1,10 @@
 import { PrismaRepository } from '@api/repository/repository.service';
+import { antiBanService } from '@api/server.module';
 import { WAMonitoringService } from '@api/services/monitor.service';
 import { Logger } from '@config/logger.config';
 import axios from 'axios';
 
 import { ChannelController, ChannelControllerInterface } from '../channel.controller';
-import { antiBanService } from '@api/server.module';
 
 export class MetaController extends ChannelController implements ChannelControllerInterface {
   private readonly logger = new Logger('MetaController');

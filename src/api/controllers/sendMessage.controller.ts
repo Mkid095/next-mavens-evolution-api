@@ -1,9 +1,9 @@
-import { AntiBanService } from '@api/services/anti-ban.service';
 import { InstanceDto } from '@api/dto/instance.dto';
 import {
   SendAudioDto,
   SendButtonsDto,
   SendContactDto,
+  SendFlowDto,
   SendInteractiveButtonsDto,
   SendListDto,
   SendLocationDto,
@@ -17,11 +17,11 @@ import {
   SendStickerDto,
   SendTemplateDto,
   SendTextDto,
-  SendFlowDto,
 } from '@api/dto/sendMessage.dto';
+import { AntiBanService } from '@api/services/anti-ban.service';
 import { WAMonitoringService } from '@api/services/monitor.service';
-import { BadRequestException } from '@exceptions';
 import { Logger } from '@config/logger.config';
+import { BadRequestException } from '@exceptions';
 import { isBase64, isURL } from 'class-validator';
 import emojiRegex from 'emoji-regex';
 

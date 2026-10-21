@@ -83,7 +83,11 @@ export class QualityMonitorService {
    * Handle RED quality score - template suspended
    */
   private async handleQualityDropRed(templateName: string, instanceId?: string): Promise<void> {
-    this.logger.warn(`Template '${templateName}' has RED quality score - SUSPENDED`);
+    this.logger.warn(
+      `Template '${templateName}' has RED quality score - SUSPENDED${
+        instanceId ? ` (observed on instance '${instanceId}')` : ''
+      }`,
+    );
 
     // Pause the template in our system
     const pauseKey = `quality:paused:${templateName}`;
@@ -91,12 +95,16 @@ export class QualityMonitorService {
 
     // Log alert
     const alertKey = `quality:alert:${templateName}`;
-    await this.cacheService.set(alertKey, JSON.stringify({
-      type: 'RED_QUALITY',
-      template: templateName,
-      timestamp: new Date().toISOString(),
-      action: 'TEMPLATE_PAUSED'
-    }), 86400); // 24 hour alert retention
+    await this.cacheService.set(
+      alertKey,
+      JSON.stringify({
+        type: 'RED_QUALITY',
+        template: templateName,
+        timestamp: new Date().toISOString(),
+        action: 'TEMPLATE_PAUSED',
+      }),
+      86400,
+    ); // 24 hour alert retention
 
     // In production, you would:
     // 1. Send alert to admin
@@ -108,16 +116,24 @@ export class QualityMonitorService {
    * Handle YELLOW quality score - warning state
    */
   private async handleQualityDropYellow(templateName: string, instanceId?: string): Promise<void> {
-    this.logger.warn(`Template '${templateName}' has YELLOW quality score - WARNING`);
+    this.logger.warn(
+      `Template '${templateName}' has YELLOW quality score - WARNING${
+        instanceId ? ` (observed on instance '${instanceId}')` : ''
+      }`,
+    );
 
     // Log warning alert
     const alertKey = `quality:alert:${templateName}`;
-    await this.cacheService.set(alertKey, JSON.stringify({
-      type: 'YELLOW_QUALITY',
-      template: templateName,
-      timestamp: new Date().toISOString(),
-      action: 'MONITORING'
-    }), 86400);
+    await this.cacheService.set(
+      alertKey,
+      JSON.stringify({
+        type: 'YELLOW_QUALITY',
+        template: templateName,
+        timestamp: new Date().toISOString(),
+        action: 'MONITORING',
+      }),
+      86400,
+    );
 
     // In production, you would:
     // 1. Send warning to admin
@@ -136,11 +152,15 @@ export class QualityMonitorService {
 
     // Log recovery
     const recoveryKey = `quality:recovery:${templateName}`;
-    await this.cacheService.set(recoveryKey, JSON.stringify({
-      template: templateName,
-      newScore,
-      timestamp: new Date().toISOString()
-    }), 86400);
+    await this.cacheService.set(
+      recoveryKey,
+      JSON.stringify({
+        template: templateName,
+        newScore,
+        timestamp: new Date().toISOString(),
+      }),
+      86400,
+    );
   }
 
   /**
@@ -154,18 +174,18 @@ export class QualityMonitorService {
     if (isPaused) {
       return {
         allowed: false,
-        reason: 'TEMPLATE_RED_QUALITY_PAUSED'
+        reason: 'TEMPLATE_RED_QUALITY_PAUSED',
       };
     }
 
     // Check current quality score
     const qualityKey = `quality:template:${templateName}`;
-    const score = await this.cacheService.get(qualityKey) as QualityScore | null;
+    const score = (await this.cacheService.get(qualityKey)) as QualityScore | null;
 
     if (score === 'RED') {
       return {
         allowed: false,
-        reason: 'TEMPLATE_HAS_RED_QUALITY'
+        reason: 'TEMPLATE_HAS_RED_QUALITY',
       };
     }
 
@@ -181,12 +201,16 @@ export class QualityMonitorService {
     const alertKey = `quality:alert:${templateName}`;
 
     const isPaused = await this.cacheService.get(pauseKey);
-    const score = await this.cacheService.get(qualityKey) as QualityScore | null;
+    const score = (await this.cacheService.get(qualityKey)) as QualityScore | null;
     const alert = await this.cacheService.get(alertKey);
 
     let status: TemplateStatus['status'] = 'APPROVED';
     if (isPaused) {
       status = 'PAUSED';
+    } else if (alert) {
+      // A quality warning was raised for this template — it is not
+      // approved and not paused, it is waiting on the warning.
+      status = 'PENDING';
     }
 
     return {
@@ -230,12 +254,14 @@ export class QualityMonitorService {
   /**
    * Get quality alerts for monitoring dashboard
    */
-  async getAlerts(): Promise<Array<{
-    type: string;
-    template: string;
-    timestamp: string;
-    action: string;
-  }>> {
+  async getAlerts(): Promise<
+    Array<{
+      type: string;
+      template: string;
+      timestamp: string;
+      action: string;
+    }>
+  > {
     // This would scan for alert keys in production
     return [];
   }

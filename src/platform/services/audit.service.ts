@@ -1,6 +1,7 @@
-import { InputJsonValue } from '@prisma/client/runtime/library';
-import { platformRepository } from '../repository/platform.repository';
 import { Logger } from '@config/logger.config';
+import { InputJsonValue } from '@prisma/client/runtime/library';
+
+import { platformRepository } from '../repository/platform.repository';
 
 /**
  * Audit Service
@@ -60,8 +61,8 @@ export class AuditService {
           typeof safeMetadata.instancePublicId === 'string'
             ? safeMetadata.instancePublicId
             : resource.type === 'instance'
-            ? resource.id
-            : undefined,
+              ? resource.id
+              : undefined,
         message: `${humanAction}: ${resource.id}`,
         metadata: safeMetadata,
         ts: row.createdAt.getTime(),
@@ -115,7 +116,7 @@ export class AuditService {
 
     for (const [key, value] of Object.entries(metadata)) {
       const lowerKey = key.toLowerCase();
-      if (forbiddenKeys.some(f => lowerKey.includes(f))) {
+      if (forbiddenKeys.some((f) => lowerKey.includes(f))) {
         sanitized[key] = '[REDACTED]';
       } else if (typeof value === 'object' && value !== null) {
         sanitized[key] = this.sanitizeMetadata(value as Record<string, unknown>);

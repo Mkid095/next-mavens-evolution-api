@@ -46,10 +46,7 @@ export class RateLimitService {
       if (count >= limit) {
         // Get oldest entry to calculate reset time
         const oldest = await redis.zRangeWithScores(key, '0', '0');
-        const resetAt =
-          oldest.length > 0
-            ? Number(oldest[0].score) + windowMs
-            : now + windowMs;
+        const resetAt = oldest.length > 0 ? Number(oldest[0].score) + windowMs : now + windowMs;
         return { allowed: false, remaining: 0, resetAt };
       }
 

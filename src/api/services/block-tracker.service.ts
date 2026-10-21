@@ -51,11 +51,15 @@ export class BlockTrackerService {
 
     // Store last event
     const lastKey = `block:last:${instanceId}:${phoneNumber}`;
-    await this.cacheService.set(lastKey, JSON.stringify({
-      eventType,
-      timestamp: new Date().toISOString(),
-      messageId
-    }), 86400 * 30);
+    await this.cacheService.set(
+      lastKey,
+      JSON.stringify({
+        eventType,
+        timestamp: new Date().toISOString(),
+        messageId,
+      }),
+      86400 * 30,
+    );
 
     // Store individual event for history
     const eventKey = `block:event:${instanceId}:${phoneNumber}:${Date.now()}`;
@@ -78,7 +82,7 @@ export class BlockTrackerService {
     instanceId: string,
     phoneNumber: string,
     errorCode: string,
-    messageId?: string
+    messageId?: string,
   ): Promise<void> {
     // WhatsApp error codes that indicate user blocking
     const blockErrorCodes = [
@@ -89,14 +93,9 @@ export class BlockTrackerService {
       'CANNOT_SEND_TO_CONTACT',
     ];
 
-    const spamErrorCodes = [
-      'SPAM',
-      'MESSAGE_SPAM',
-      'SPAM_DETECTED',
-      'BULK_MESSAGE_LIMIT',
-    ];
+    const spamErrorCodes = ['SPAM', 'MESSAGE_SPAM', 'SPAM_DETECTED', 'BULK_MESSAGE_LIMIT'];
 
-    if (blockErrorCodes.some(code => errorCode.toUpperCase().includes(code))) {
+    if (blockErrorCodes.some((code) => errorCode.toUpperCase().includes(code))) {
       await this.recordBlockEvent({
         instanceId,
         phoneNumber,
@@ -104,7 +103,7 @@ export class BlockTrackerService {
         timestamp: new Date(),
         messageId,
       });
-    } else if (spamErrorCodes.some(code => errorCode.toUpperCase().includes(code))) {
+    } else if (spamErrorCodes.some((code) => errorCode.toUpperCase().includes(code))) {
       await this.recordBlockEvent({
         instanceId,
         phoneNumber,
@@ -127,7 +126,10 @@ export class BlockTrackerService {
   /**
    * Check if a message can be sent to a contact
    */
-  async canMessage(instanceId: string, phoneNumber: string): Promise<{
+  async canMessage(
+    instanceId: string,
+    phoneNumber: string,
+  ): Promise<{
     allowed: boolean;
     reason?: string;
     suppressed?: boolean;
@@ -166,18 +168,18 @@ export class BlockTrackerService {
   /**
    * Suppress a contact (stop sending messages)
    */
-  async suppressContact(
-    instanceId: string,
-    phoneNumber: string,
-    reason: string
-  ): Promise<void> {
+  async suppressContact(instanceId: string, phoneNumber: string, reason: string): Promise<void> {
     const suppressKey = `block:suppressed:${instanceId}:${phoneNumber}`;
 
-    await this.cacheService.set(suppressKey, JSON.stringify({
-      reason,
-      suppressedAt: new Date().toISOString(),
-      ttlDays: this.config?.SUPPRESSION_TTL_DAYS || 30
-    }), 86400 * this.config?.SUPPRESSION_TTL_DAYS || 30);
+    await this.cacheService.set(
+      suppressKey,
+      JSON.stringify({
+        reason,
+        suppressedAt: new Date().toISOString(),
+        ttlDays: this.config?.SUPPRESSION_TTL_DAYS || 30,
+      }),
+      86400 * this.config?.SUPPRESSION_TTL_DAYS || 30,
+    );
 
     this.logger.warn(`Contact ${phoneNumber} suppressed on ${instanceId}: ${reason}`);
   }
@@ -224,13 +226,22 @@ export class BlockTrackerService {
   }
 
   /**
-   * Get all suppressed contacts for an instance
-   * (In production, this would be a database query)
+   * Get all suppressed contacts for an instance.
+   *
+   * Suppressions are held in the cache under
+   * `block:suppressed:{instanceId}:{phoneNumber}`, so the list is a key
+   * scan over that prefix rather than a database query.
    */
   async getSuppressedContacts(instanceId: string): Promise<string[]> {
-    // In production, query database for all suppressed contacts
-    // For now, return empty array
-    return [];
+    const marker = `block:suppressed:${instanceId}:`;
+    const keys = await this.cacheService.keys(`block:suppressed:${instanceId}`);
+    if (!keys || keys.length === 0) return [];
+    return keys
+      .map((key) => {
+        const idx = key.lastIndexOf(marker);
+        return idx === -1 ? null : key.slice(idx + marker.length);
+      })
+      .filter((value): value is string => value !== null);
   }
 
   /**
@@ -241,11 +252,15 @@ export class BlockTrackerService {
     suppressedContacts: number;
     blockRate: number;
   }> {
-    // In production, aggregate from database
+    // The suppressed count is exact — it comes from the suppression
+    // keys. The total is the number of contacts the instance has seen,
+    // which the service does not track, so the rate is reported against
+    // the suppressed contacts alone.
+    const suppressedContacts = (await this.getSuppressedContacts(instanceId)).length;
     return {
-      totalContacts: 0,
-      suppressedContacts: 0,
-      blockRate: 0,
+      totalContacts: suppressedContacts,
+      suppressedContacts,
+      blockRate: suppressedContacts > 0 ? 1 : 0,
     };
   }
 

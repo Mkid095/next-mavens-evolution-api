@@ -1,5 +1,5 @@
-import { PrismaClient } from '@prisma/client';
 import { Logger } from '@config/logger.config';
+import { PrismaClient } from '@prisma/client';
 
 /**
  * Platform Repository

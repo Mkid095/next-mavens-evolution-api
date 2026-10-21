@@ -10,8 +10,8 @@
  * Base path: /api/v1
  */
 
-import { Router } from 'express';
 import { configService } from '@config/env.config';
+import { Router } from 'express';
 
 import { HttpStatus } from './index.router';
 
@@ -28,12 +28,8 @@ router.get('/config/branding', (req, res) => {
   res.status(HttpStatus.OK).json({
     companyName: branding.COMPANY_NAME,
     productName: branding.PRODUCT_NAME,
-    logoUrl: branding.LOGO_URL.startsWith('/')
-      ? `${serverUrl}${branding.LOGO_URL}`
-      : branding.LOGO_URL,
-    faviconUrl: branding.FAVICON_URL.startsWith('/')
-      ? `${serverUrl}${branding.FAVICON_URL}`
-      : branding.FAVICON_URL,
+    logoUrl: branding.LOGO_URL.startsWith('/') ? `${serverUrl}${branding.LOGO_URL}` : branding.LOGO_URL,
+    faviconUrl: branding.FAVICON_URL.startsWith('/') ? `${serverUrl}${branding.FAVICON_URL}` : branding.FAVICON_URL,
     primaryColor: branding.PRIMARY_COLOR,
     secondaryColor: branding.SECONDARY_COLOR,
     accentColor: branding.ACCENT_COLOR,

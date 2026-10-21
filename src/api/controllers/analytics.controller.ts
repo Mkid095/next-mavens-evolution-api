@@ -1,6 +1,6 @@
-import { AnalyticsService } from '@api/services/analytics.service';
-import { InstanceDto } from '@api/dto/instance.dto';
 import { AnalyticsQueryDto } from '@api/dto/analytics.dto';
+import { InstanceDto } from '@api/dto/instance.dto';
+import { AnalyticsService } from '@api/services/analytics.service';
 import { Logger } from '@config/logger.config';
 
 export class AnalyticsController {

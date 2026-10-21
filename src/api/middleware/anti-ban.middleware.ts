@@ -1,6 +1,6 @@
-import { Request, Response, NextFunction } from 'express';
 import { AntiBanService } from '@api/services/anti-ban.service';
 import { Logger } from '@config/logger.config';
+import { NextFunction, Request, Response } from 'express';
 
 /**
  * Middleware to check anti-ban status before processing message requests

@@ -5,41 +5,47 @@ import { RequestHandler, Router } from 'express';
 import { HttpStatus } from './index.router';
 
 export class AntiBanRouter extends RouterBroker {
+  /**
+   * The guards passed in are applied to every route. They used to be
+   * accepted and dropped, which left the whole anti-ban surface — per
+   * instance rate limits, health, suppression lists and the template
+   * pause/resume controls — readable and writable without a key.
+   */
   constructor(...guards: RequestHandler[]) {
     super();
     this.router = Router();
     this.router
       // Health check
-      .get(this.routerPath('health'), async (req, res) => {
+      .get(this.routerPath('health'), ...guards, async (req, res) => {
         const health = await antiBanService.healthCheck();
         return res.status(HttpStatus.OK).json(health);
       })
       // Get account health
-      .get(this.routerPath('status'), async (req, res) => {
+      .get(this.routerPath('status'), ...guards, async (req, res) => {
         const instanceName = req.query.instance as string | undefined;
         const health = await antiBanService.getAccountHealth(instanceName);
         return res.status(HttpStatus.OK).json(health);
       })
       // Get rate limit info for a contact
-      .get(this.routerPath('rate-limit/:instance/:phone'), async (req, res) => {
+      .get(this.routerPath('rate-limit/:instance/:phone'), ...guards, async (req, res) => {
         const { instance, phone } = req.params;
         const info = await antiBanService.getRateLimitInfo(instance, phone);
         return res.status(HttpStatus.OK).json(info);
       })
       // Get template status
-      .get(this.routerPath('template/:name'), async (req, res) => {
+      .get(this.routerPath('template/:name'), ...guards, async (req, res) => {
         const { name } = req.params;
         const status = await antiBanService.getTemplateStatus(name);
         return res.status(HttpStatus.OK).json(status);
       })
       // Get contact block stats
-      .get(this.routerPath('contact/:instance/:phone'), async (req, res) => {
+      .get(this.routerPath('contact/:instance/:phone'), ...guards, async (req, res) => {
         const { instance, phone } = req.params;
         const stats = await antiBanService.getContactBlockStats(instance, phone);
         return res.status(HttpStatus.OK).json(stats);
       })
       // Manually pause a template
-      .post(this.routerPath('pause-template'), async (req, res) => {
+      .post(this.routerPath('pause-template'), ...guards, async (req, res) => {
         const { templateName, reason } = req.body;
         if (!templateName) {
           return res.status(HttpStatus.BAD_REQUEST).json({ error: 'templateName is required' });
@@ -51,7 +57,7 @@ export class AntiBanRouter extends RouterBroker {
         });
       })
       // Resume a template
-      .post(this.routerPath('resume-template'), async (req, res) => {
+      .post(this.routerPath('resume-template'), ...guards, async (req, res) => {
         const { templateName } = req.body;
         if (!templateName) {
           return res.status(HttpStatus.BAD_REQUEST).json({ error: 'templateName is required' });
@@ -63,7 +69,7 @@ export class AntiBanRouter extends RouterBroker {
         });
       })
       // Unsubscribe a contact (opt-out)
-      .post(this.routerPath('unsubscribe'), async (req, res) => {
+      .post(this.routerPath('unsubscribe'), ...guards, async (req, res) => {
         const { instanceName, phoneNumber } = req.body;
         if (!instanceName || !phoneNumber) {
           return res.status(HttpStatus.BAD_REQUEST).json({
@@ -77,7 +83,7 @@ export class AntiBanRouter extends RouterBroker {
         });
       })
       // Re-subscribe a contact
-      .post(this.routerPath('resubscribe'), async (req, res) => {
+      .post(this.routerPath('resubscribe'), ...guards, async (req, res) => {
         const { instanceName, phoneNumber } = req.body;
         if (!instanceName || !phoneNumber) {
           return res.status(HttpStatus.BAD_REQUEST).json({
@@ -91,7 +97,7 @@ export class AntiBanRouter extends RouterBroker {
         });
       })
       // Get all suppressed contacts for an instance
-      .get(this.routerPath('suppressed/:instance'), async (req, res) => {
+      .get(this.routerPath('suppressed/:instance'), ...guards, async (req, res) => {
         const { instance } = req.params;
         const contacts = await antiBanService['blockTracker'].getSuppressedContacts(instance);
         return res.status(HttpStatus.OK).json({

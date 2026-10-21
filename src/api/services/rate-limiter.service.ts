@@ -1,5 +1,5 @@
-import { CacheService } from '@api/services/cache.service';
 import { PrismaRepository } from '@api/repository/repository.service';
+import { CacheService } from '@api/services/cache.service';
 import { ConfigService } from '@config/env.config';
 import { Logger } from '@config/logger.config';
 
@@ -209,7 +209,10 @@ export class RateLimiterService {
   /**
    * Get current rate limit status for a contact
    */
-  async getContactStatus(instanceId: string, phoneNumber: string): Promise<{
+  async getContactStatus(
+    instanceId: string,
+    phoneNumber: string,
+  ): Promise<{
     lastSendAt: number | null;
     messagesInLastHour: number;
     canSend: boolean;

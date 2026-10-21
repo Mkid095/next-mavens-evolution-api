@@ -1,9 +1,10 @@
-import { RateLimiterService, RateLimitResult } from './rate-limiter.service';
-import { QualityMonitorService, QualityScore } from './quality-monitor.service';
-import { BlockTrackerService } from './block-tracker.service';
 import { CacheService } from '@api/services/cache.service';
 import { ConfigService } from '@config/env.config';
 import { Logger } from '@config/logger.config';
+
+import { BlockTrackerService } from './block-tracker.service';
+import { QualityMonitorService, QualityScore } from './quality-monitor.service';
+import { RateLimiterService, RateLimitResult } from './rate-limiter.service';
 
 export interface AntiBanCheckResult {
   allowed: boolean;
@@ -44,11 +45,7 @@ export class AntiBanService {
    * Comprehensive anti-ban check before sending any message
    * This is the main entry point for the anti-ban system
    */
-  async canSendMessage(
-    instanceId: string,
-    phoneNumber: string,
-    templateName?: string
-  ): Promise<AntiBanCheckResult> {
+  async canSendMessage(instanceId: string, phoneNumber: string, templateName?: string): Promise<AntiBanCheckResult> {
     const checks = {
       rateLimit: { allowed: true } as RateLimitResult,
       templateQuality: { allowed: true },
@@ -115,7 +112,7 @@ export class AntiBanService {
     instanceId: string,
     phoneNumber: string,
     errorCode: string,
-    messageId?: string
+    messageId?: string,
   ): Promise<void> {
     // Let block tracker analyze the error
     await this.blockTracker.recordMessageFailure(instanceId, phoneNumber, errorCode, messageId);
@@ -156,9 +153,7 @@ export class AntiBanService {
     }
 
     // Check suppressed contacts count
-    const suppressedCount = instanceId
-      ? (await this.blockTracker.getSuppressedContacts(instanceId)).length
-      : 0;
+    const suppressedCount = instanceId ? (await this.blockTracker.getSuppressedContacts(instanceId)).length : 0;
 
     if (suppressedCount > 10) {
       issues.push(`${suppressedCount} suppressed contacts`);
@@ -187,7 +182,10 @@ export class AntiBanService {
   /**
    * Get rate limit information for API response
    */
-  async getRateLimitInfo(instanceId: string, phoneNumber: string): Promise<{
+  async getRateLimitInfo(
+    instanceId: string,
+    phoneNumber: string,
+  ): Promise<{
     contactStatus: {
       lastSendAt: number | null;
       messagesInLastHour: number;
@@ -232,11 +230,7 @@ export class AntiBanService {
    */
   async unsubscribeContact(instanceId: string, phoneNumber: string): Promise<void> {
     // Suppress the contact to prevent further messages
-    await this.blockTracker.suppressContact(
-      instanceId,
-      phoneNumber,
-      'User unsubscribe/opt-out'
-    );
+    await this.blockTracker.suppressContact(instanceId, phoneNumber, 'User unsubscribe/opt-out');
 
     // Also reset rate limits
     await this.rateLimiter.resetContactLimits(instanceId, phoneNumber);
@@ -275,8 +269,9 @@ export class AntiBanService {
     const services: string[] = [];
 
     try {
-      // Check if rate limiter is working
-      const rateLimitConfig = this.rateLimiter.getConfig();
+      // Check if the rate limiter is working — the config itself is not
+      // reported, only that the call succeeded.
+      this.rateLimiter.getConfig();
       services.push(`RateLimiter:OK`);
 
       // Check cache connectivity

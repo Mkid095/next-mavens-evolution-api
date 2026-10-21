@@ -1,5 +1,5 @@
-import { createClient, RedisClientType } from 'redis';
 import { Logger } from '@config/logger.config';
+import { createClient, RedisClientType } from 'redis';
 
 /**
  * Account-scoped activity event publisher.
@@ -54,10 +54,7 @@ async function getRedisPublisher(): Promise<RedisClientType | null> {
  * Fire-and-forget event publication. Errors are logged but never
  * thrown — a Redis hiccup must not fail the originating request.
  */
-export async function publishAccountEvent(
-  accountId: string,
-  event: ActivityEventPayload,
-): Promise<void> {
+export async function publishAccountEvent(accountId: string, event: ActivityEventPayload): Promise<void> {
   const publisher = await getRedisPublisher();
   if (!publisher) return;
   try {

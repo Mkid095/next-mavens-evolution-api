@@ -1,5 +1,6 @@
-import { platformRepository } from '../repository/platform.repository';
 import { Logger } from '@config/logger.config';
+
+import { platformRepository } from '../repository/platform.repository';
 
 /**
  * Tenant Service
@@ -12,9 +13,7 @@ export class TenantService {
    * Load a platform account by publicId and check status.
    * Returns null if not found or not active.
    */
-  public async resolveAccount(
-    publicId: string,
-  ): Promise<{
+  public async resolveAccount(publicId: string): Promise<{
     accountId: string;
     publicId: string;
     status: string;
