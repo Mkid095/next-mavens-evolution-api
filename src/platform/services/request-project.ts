@@ -12,6 +12,36 @@ import { ProjectScope } from './project-scope.service';
 const PROJECT_HINT_HEADER = 'x-viventure-project';
 
 /**
+ * The project a request named, if it named one.
+ *
+ * An account-level personal access token names the project it acts on with
+ * the `X-Viventure-Project` header. A project-scoped key already knows its
+ * project, so a header is only meaningful — and only an error — when it
+ * names a different one.
+ */
+export function readProjectHint(req: Request): string | null {
+  const hint = req.headers[PROJECT_HINT_HEADER];
+  const wanted = Array.isArray(hint) ? hint[0] : hint;
+  return typeof wanted === 'string' && wanted.trim() ? wanted.trim() : null;
+}
+
+/**
+ * Is the caller a key that is scoped to a DIFFERENT project than the one
+ * the request named?
+ *
+ * The REST routes answer 403 for this. The MCP gateway has to answer too:
+ * silently acting on the key's own project when the caller named another
+ * one is worse than an error — the caller gets another project's data and
+ * has no way to know.
+ */
+export function keyIsScopedElsewhere(req: Request, projectId: string): boolean {
+  const key = (req as Request & { platformKey?: { apiKeyId?: string; projectId?: string | null } }).platformKey;
+  if (!key?.apiKeyId) return false; // a session — a full login for the account
+  if (!key.projectId) return false; // an account-level personal access token
+  return key.projectId !== projectId;
+}
+
+/**
  * Resolve the project a request is scoped to.
  *
  * An API key IS project-scoped — it carries its project, and everything

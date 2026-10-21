@@ -43,7 +43,7 @@ import { handleMcpHttpRequest } from '../mcp/transport';
 import { hybridAuth } from '../middleware/hybrid-auth.middleware';
 import { tenantResolveMiddleware } from '../middleware/tenant-resolve.middleware';
 import { platformRepository } from '../repository/platform.repository';
-import { resolveRequestProject } from '../services/request-project';
+import { keyIsScopedElsewhere, readProjectHint, resolveRequestProject } from '../services/request-project';
 import { PlatformTenant } from '../types/platform-tenant';
 import { getSessionService } from './auth.routes';
 
@@ -70,6 +70,19 @@ function jsonRpcResult(res: Response, result: unknown) {
 // ─── Router ───────────────────────────────────────────────────────────────────
 
 const router = Router();
+
+/** Find a project of the account by slug or public id. */
+async function resolveHintedProject(
+  accountId: string,
+  nameOrSlug: string,
+): Promise<{ id: string; name: string } | null> {
+  const projects = await platformRepository.platformProject.findMany({
+    where: { accountId },
+    select: { id: true, name: true, slug: true, publicId: true },
+  });
+  const found = projects.find((p) => p.slug === nameOrSlug || p.publicId === nameOrSlug);
+  return found ? { id: found.id, name: found.name } : null;
+}
 
 /**
  * POST /api/v1/platform/mcp — the standard MCP transport (Streamable HTTP).
@@ -223,6 +236,21 @@ router.post(
         required: TOOL_SCOPES[tool] ?? [],
         granted: grantedScopes(req),
       });
+    }
+
+    // A project-scoped key that is pointed at another project is an
+    // error, not a hint to ignore. The REST routes answer 403 for this;
+    // the gateway has to answer too, or the caller gets another
+    // project's data and no way of knowing.
+    const projectHint = readProjectHint(req);
+    if (projectHint) {
+      const hinted = await resolveHintedProject(platformTenant.accountId, projectHint);
+      if (!hinted) {
+        return jsonRpcError(res, -32602, `No project named "${projectHint}" on this account`);
+      }
+      if (keyIsScopedElsewhere(req, hinted.id)) {
+        return jsonRpcError(res, -32003, `This API key is scoped to a different project than "${projectHint}"`);
+      }
     }
 
     try {

@@ -1,6 +1,8 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } from '@modelcontextprotocol/sdk/types.js';
 
+import { platformRepository } from '../repository/platform.repository';
+import { keyIsScopedElsewhere, readProjectHint } from '../services/request-project';
 import { publishMcpEvent } from './activity';
 import { checkToolScopes, grantedScopes } from './scopes';
 import { auditService, executeTool, isToolError, ToolContext } from './tool-executor';
@@ -60,6 +62,19 @@ export function toMcpToolDescriptor(tool: McpTool) {
   };
 }
 
+/** Find a project of the account by slug or public id. */
+async function resolveHintedProject(
+  accountId: string,
+  nameOrSlug: string,
+): Promise<{ id: string; name: string } | null> {
+  const projects = await platformRepository.platformProject.findMany({
+    where: { accountId },
+    select: { id: true, name: true, slug: true, publicId: true },
+  });
+  const found = projects.find((p) => p.slug === nameOrSlug || p.publicId === nameOrSlug);
+  return found ? { id: found.id, name: found.name } : null;
+}
+
 /** Map a legacy tool error code onto an MCP error code. */
 function toMcpErrorCode(code: number): number {
   switch (code) {
@@ -102,6 +117,21 @@ export function createMcpServer(ctx: ToolContext): Server {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const name = request.params.name;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+
+    // A project-scoped key pointed at another project is an error, not a
+    // hint to ignore. The REST routes answer 403 for this; the gateway
+    // has to answer too, or the caller gets another project's data and
+    // no way of knowing.
+    const hint = readProjectHint(ctx.req);
+    if (hint) {
+      const hinted = await resolveHintedProject(ctx.tenant.accountId, hint);
+      if (!hinted) {
+        throw new McpError(ErrorCode.InvalidParams, `No project named "${hint}" on this account`);
+      }
+      if (keyIsScopedElsewhere(ctx.req, hinted.id)) {
+        throw new McpError(ErrorCode.InvalidRequest, `This API key is scoped to a different project than "${hint}"`);
+      }
+    }
 
     if (!checkToolScopes(ctx.req, name)) {
       throw new McpError(ErrorCode.InvalidRequest, `Forbidden: insufficient scopes for tool "${name}"`, {
