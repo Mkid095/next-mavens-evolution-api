@@ -355,6 +355,52 @@ export class EvolutionAdapter implements IWhatsAppAdapter {
   }
 
   /**
+   * The instance's own WhatsApp profile picture.
+   *
+   * Two sources, in order:
+   *
+   *   1. the live socket — WhatsApp hands out a fresh, signed URL every
+   *      time it is asked, and the one stored on the engine row expires
+   *      (the `oe=` parameter in it is an expiry stamp, about ten days
+   *      out). A picture served from the stored URL silently stops
+   *      rendering once it does.
+   *   2. the engine row — what was last seen, used when the socket is
+   *      not up.
+   */
+  async getProfilePicture(instanceId: string): Promise<{ url: string | null; name: string | null }> {
+    const platformInstance = await platformRepository.platformInstance.findUnique({
+      where: { id: instanceId },
+      select: { id: true, name: true, phoneNumber: true },
+    });
+
+    if (!platformInstance) {
+      throw new Error(`PlatformInstance ${instanceId} not found`);
+    }
+
+    const engine = await platformRepository.instance.findFirst({
+      where: { name: platformInstance.name },
+      select: { profilePicUrl: true, profileName: true, ownerJid: true },
+    });
+
+    const live = waMonitor.waInstances[platformInstance.name];
+    const number = platformInstance.phoneNumber ?? engine?.ownerJid ?? null;
+
+    // The live socket can be asked for a fresh URL.
+    if (live && number) {
+      try {
+        const fresh = await (live as any).profilePicture(number);
+        if (fresh?.profilePictureUrl) {
+          return { url: fresh.profilePictureUrl, name: engine?.profileName ?? null };
+        }
+      } catch (error) {
+        this.logger.warn(`Could not fetch a fresh profile picture for ${platformInstance.name}: ${error}`);
+      }
+    }
+
+    return { url: engine?.profilePicUrl ?? null, name: engine?.profileName ?? null };
+  }
+
+  /**
    * Reconcile every instance that has an engine row.
    *
    * A device can be paired while nobody is looking at the dashboard, and

@@ -22,16 +22,33 @@ export const FALLBACK_VERSION = '1.0.0';
 
 /**
  * Read the CLI version from the package manifest.
- * The manifest sits next to the built CLI (`dist/cli/index.js` → `../../package.json`).
+ *
+ * The manifest is not in the same place in every layout the CLI runs in:
+ *
+ *   - in the repository, the bundle is `dist/cli/index.js` and the
+ *     manifest is two levels up;
+ *   - in the published `@viventure/cli` package, the bundle is
+ *     `bin/viventure.js` and the manifest is one level up.
+ *
+ * So every candidate is tried and the first manifest that carries a
+ * version wins.
  */
 export function readVersion(): string {
-  try {
-    if (typeof __dirname !== 'undefined') {
-      const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+  if (typeof __dirname === 'undefined') return FALLBACK_VERSION;
+
+  const candidates = [
+    path.join(__dirname, '..', '..', 'package.json'), // dist/cli/index.js
+    path.join(__dirname, '..', 'package.json'), // bin/viventure.js
+    path.join(__dirname, 'package.json'),
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      const manifest = JSON.parse(fs.readFileSync(candidate, 'utf8'));
       if (manifest?.version) return String(manifest.version);
+    } catch {
+      /* try the next one */
     }
-  } catch {
-    /* fall through to the static version */
   }
   return FALLBACK_VERSION;
 }

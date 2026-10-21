@@ -1,0 +1,30 @@
+{
+  "name": "@viventure/cli",
+  "version": "1.0.2",
+  "description": "The viventure command line — drive the Viventure WhatsApp platform from a terminal",
+  "license": "UNLICENSED",
+  "private": false,
+  "type": "commonjs",
+  "bin": {
+    "viventure": "./bin/viventure.js"
+  },
+  "files": [
+    "bin/viventure.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "registry": "https://registry.nextmavens.com"
+  },
+  "keywords": [
+    "viventure",
+    "whatsapp",
+    "cli",
+    "mcp"
+  ],
+  "dependencies": {
+    "commander": "^14.0.1"
+  }
+}

@@ -20,16 +20,20 @@ const auditService = new AuditService();
  * Keeps the publicId stable across all endpoints so the dashboard can
  * always navigate to /dashboard/instances/{id} without a name swap.
  */
-function toInstanceDTO(row: {
-  id: string;
-  publicId: string;
-  name: string;
-  status: string;
-  phoneNumber: string | null;
-  capabilities: unknown;
-  lastConnectedAt: Date | null;
-  createdAt: Date;
-}) {
+function toInstanceDTO(
+  row: {
+    id: string;
+    publicId: string;
+    name: string;
+    status: string;
+    phoneNumber: string | null;
+    capabilities: unknown;
+    lastConnectedAt: Date | null;
+    createdAt: Date;
+    profileName?: string | null;
+  },
+  scope: { accountPublicId: string; projectPublicId: string },
+) {
   return {
     id: row.publicId, // external-facing id is the publicId
     internalId: row.id, // engine CUID, used by internal routes
@@ -37,6 +41,12 @@ function toInstanceDTO(row: {
     name: row.name,
     status: row.status,
     phoneNumber: row.phoneNumber,
+    // The WhatsApp profile name — the name the person set on their
+    // WhatsApp account, which is not the instance name.
+    profileName: row.profileName ?? null,
+    // The picture is served through the platform rather than handed over
+    // as a URL: WhatsApp's picture URLs are signed and expire.
+    profilePictureUrl: `/api/v1/accounts/${scope.accountPublicId}/projects/${scope.projectPublicId}/instances/${row.publicId}/profile-picture`,
     capabilities: row.capabilities ?? [],
     lastConnectedAt: row.lastConnectedAt,
     connectedAt: row.lastConnectedAt, // alias for backward compatibility
@@ -95,7 +105,57 @@ router.get(
         orderBy: { createdAt: 'desc' },
       });
 
-      res.json(fresh.map(toInstanceDTO));
+      res.json(
+        fresh.map((row) =>
+          toInstanceDTO(row, {
+            accountPublicId: context.tenant.publicId,
+            projectPublicId: context.project.publicId,
+          }),
+        ),
+      );
+    } catch {
+      res.status(500).json({ error: 'FETCH_ERROR' });
+    }
+  },
+);
+
+/**
+ * The instance's WhatsApp profile picture.
+ * GET /accounts/:accountId/projects/:projectPublicId/instances/:instId/profile-picture
+ *
+ * The bytes are proxied rather than the URL passed on. WhatsApp's picture
+ * URLs are signed and expire — the one stored on the engine row stops
+ * working after about ten days — so handing that URL to a browser means
+ * the picture silently disappears. Asking the live socket for a fresh URL
+ * and streaming the image through the platform means it always renders.
+ */
+router.get(
+  '/:accountId/projects/:projectPublicId/instances/:instId/profile-picture',
+  hybridAuth(getSessionService()),
+  tenantResolveMiddleware.resolve,
+  async (req: Request, res: Response) => {
+    try {
+      const context = await requireProjectContext(req, res);
+      if (!context) return;
+
+      const instance = await requireProjectInstance(req, res, context.project.id);
+      if (!instance) return;
+
+      const { url } = await evolutionAdapter.getProfilePicture(instance.id);
+      if (!url) {
+        res.status(404).json({ error: 'NOT_FOUND', message: 'No profile picture' });
+        return;
+      }
+
+      const upstream = await fetch(url);
+      if (!upstream.ok) {
+        res.status(404).json({ error: 'NOT_FOUND', message: 'No profile picture' });
+        return;
+      }
+
+      res.setHeader('Content-Type', upstream.headers.get('content-type') ?? 'image/jpeg');
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      res.send(Buffer.from(await upstream.arrayBuffer()));
     } catch {
       res.status(500).json({ error: 'FETCH_ERROR' });
     }
@@ -143,7 +203,10 @@ router.post(
           });
           return;
         }
-        const responseBody = toInstanceDTO(existing);
+        const responseBody = toInstanceDTO(existing, {
+          accountPublicId: context.tenant.publicId,
+          projectPublicId: context.project.publicId,
+        });
         await idempotencyMiddleware.complete(req, res, responseBody, existing.publicId);
         res.status(200).json(responseBody);
         return;
@@ -165,7 +228,10 @@ router.post(
         { projectId: context.project.id },
       );
 
-      const responseBody = toInstanceDTO(instance);
+      const responseBody = toInstanceDTO(instance, {
+        accountPublicId: context.tenant.publicId,
+        projectPublicId: context.project.publicId,
+      });
 
       await idempotencyMiddleware.complete(req, res, responseBody, instance.publicId);
 
@@ -231,8 +297,28 @@ router.get(
         /* engine not initialized yet — that's fine, no QR to return */
       }
 
+      // The WhatsApp profile name lives on the engine's row — it is the
+      // name the person set on their WhatsApp account, which is not the
+      // instance name.
+      let profileName: string | null = null;
+      try {
+        const engineRow = await platformRepository.instance.findFirst({
+          where: { name: instance.name },
+          select: { profileName: true },
+        });
+        profileName = engineRow?.profileName ?? null;
+      } catch {
+        /* the engine row is optional */
+      }
+
       res.json({
-        ...toInstanceDTO(instance),
+        ...toInstanceDTO(
+          { ...instance, profileName },
+          {
+            accountPublicId: context.tenant.publicId,
+            projectPublicId: context.project.publicId,
+          },
+        ),
         ...(qrCode ? { qrCode } : {}),
       });
     } catch {

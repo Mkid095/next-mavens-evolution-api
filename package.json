@@ -1,6 +1,6 @@
 {
   "name": "nextmavens-fidscript-whatsapp-api",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Next Mavens Fidscript WhatsApp API - Enterprise WhatsApp Business API Platform",
   "main": "./dist/main.js",
   "type": "commonjs",
@@ -8,7 +8,7 @@
     "viventure": "./dist/cli/index.js"
   },
   "scripts": {
-    "build": "tsc --noEmit && tsup",
+    "build": "tsc --noEmit && tsup && npm run build:cli",
     "start": "tsx ./src/main.ts",
     "start:prod": "node dist/main",
     "cli": "tsx ./src/cli/index.ts",
@@ -24,7 +24,9 @@
     "db:studio": "node runWithProvider.js \"npx prisma studio --schema ./prisma/DATABASE_PROVIDER-schema.prisma\"",
     "db:migrate:dev": "node runWithProvider.js \"rm -rf ./prisma/migrations && cp -r ./prisma/DATABASE_PROVIDER-migrations ./prisma/migrations && npx prisma migrate dev --schema ./prisma/DATABASE_PROVIDER-schema.prisma && cp -r ./prisma/migrations/* ./prisma/DATABASE_PROVIDER-migrations\"",
     "db:migrate:dev:win": "node runWithProvider.js \"xcopy /E /I prisma\\DATABASE_PROVIDER-migrations prisma\\migrations && npx prisma migrate dev --schema prisma\\DATABASE_PROVIDER-schema.prisma\"",
-    "prepare": "husky"
+    "prepare": "husky",
+    "build:cli": "node scripts/build-cli-package.js",
+    "publish:cli": "npm run build:cli && npm publish --workspace @viventure/cli --access public"
   },
   "repository": {
     "type": "git",

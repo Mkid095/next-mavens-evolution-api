@@ -26,12 +26,15 @@ import { ApiClient } from '../client';
 import { CliContext, toCliError } from '../context';
 import { addCommonOptions, addJsonOption, globalOptions } from '../options';
 import { color, dim, renderTable } from '../output';
+import { readVersion } from '../program';
 
 interface McpToolDefinition {
   name: string;
   category: string;
   description: string;
   inputSchema?: Record<string, unknown>;
+  /** The scopes the tool needs, when the platform reports them. */
+  scopes?: string[];
 }
 
 interface McpCategory {
@@ -241,7 +244,7 @@ async function runStdioBridge(client: ApiClient): Promise<void> {
           respond(id, {
             protocolVersion: version,
             capabilities: { tools: { listChanged: false } },
-            serverInfo: { name: 'viventure', version: '1.0.0' },
+            serverInfo: { name: 'viventure', version: readVersion() },
           });
           break;
         }
@@ -257,6 +260,10 @@ async function runStdioBridge(client: ApiClient): Promise<void> {
             tools: catalogue.map((tool) => ({
               name: tool.name,
               description: tool.description,
+              // The category and the scopes travel with the tool, so a
+              // client that shows a catalogue can group them.
+              category: tool.category,
+              scopes: tool.scopes ?? [],
               inputSchema: tool.inputSchema ?? { type: 'object', properties: {} },
             })),
           });

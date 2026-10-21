@@ -50,3 +50,7 @@ lerna-debug.log*
 .tool-versions
 
 /prisma/migrations/*
+
+# The published CLI package is built from dist/cli — the artefact is
+# generated, not source.
+packages/cli/bin/

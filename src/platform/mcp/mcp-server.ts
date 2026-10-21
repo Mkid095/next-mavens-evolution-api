@@ -4,7 +4,7 @@ import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } fr
 import { publishMcpEvent } from './activity';
 import { checkToolScopes, grantedScopes } from './scopes';
 import { auditService, executeTool, isToolError, ToolContext } from './tool-executor';
-import { MCP_TOOLS, McpTool, TOOL_SCOPES } from './tool-registry';
+import { CATEGORIES, MCP_TOOLS, McpTool, TOOL_SCOPES } from './tool-registry';
 
 /**
  * The MCP server implementation.
@@ -29,7 +29,16 @@ function humanize(name: string): string {
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
-/** Map a registry tool onto the MCP tool descriptor shape. */
+/**
+ * Map a registry tool onto the MCP tool descriptor shape.
+ *
+ * The category travels with the tool. It is not part of the MCP core
+ * schema, but a client showing a catalogue of 31 tools needs the
+ * grouping — and the spec allows extra fields. `_meta` is the spec's own
+ * slot for server metadata, so the category is in both places: where a
+ * client that only knows the core schema will look for it, and where one
+ * that reads `_meta` will.
+ */
 export function toMcpToolDescriptor(tool: McpTool) {
   const scopes = TOOL_SCOPES[tool.name] ?? [];
   const readOnly = scopes.length > 0 && scopes.every((scope) => scope.endsWith(':read'));
@@ -38,6 +47,8 @@ export function toMcpToolDescriptor(tool: McpTool) {
     title: humanize(tool.name),
     description: tool.description,
     inputSchema: tool.inputSchema,
+    category: tool.category,
+    scopes,
     annotations: {
       title: humanize(tool.name),
       readOnlyHint: readOnly,
@@ -45,6 +56,7 @@ export function toMcpToolDescriptor(tool: McpTool) {
       idempotentHint: readOnly,
       openWorldHint: true,
     },
+    _meta: { category: tool.category, scopes },
   };
 }
 
@@ -75,8 +87,11 @@ export function createMcpServer(ctx: ToolContext): Server {
     {
       capabilities: { tools: {} },
       instructions:
-        'Viventure WhatsApp Business API. Use the instance tools to provision, connect and monitor WhatsApp instances, ' +
-        'the message tools to send WhatsApp messages, and get_documentation to read the platform documentation.',
+        'Viventure WhatsApp Business API. The tools are grouped into categories — ' +
+        CATEGORIES.map((c) => `${c.id} (${c.label}): ${c.description.toLowerCase()}`).join('; ') +
+        '. Each tool carries its category and the scopes it needs. Use the instance tools to provision, ' +
+        'connect and monitor WhatsApp instances, the message tools to send WhatsApp messages, and ' +
+        'get_documentation to read the platform documentation.',
     },
   );
 
