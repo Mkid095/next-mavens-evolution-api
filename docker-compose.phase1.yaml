@@ -5,6 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    image: next-mavens-evolution-api-platform-api:latest
     container_name: platform-api
     restart: always
     ports:
@@ -14,7 +15,7 @@ services:
     environment:
       POSTGRES_HOST: platform-postgres
       POSTGRES_USER: fidscript
-      POSTGRES_PASSWORD: fidscript_phase1_password
+      # POSTGRES_PASSWORD comes from .env.phase1 (never committed).
     depends_on:
       platform-redis:
         condition: service_healthy
@@ -24,10 +25,22 @@ services:
       - platform_instances:/fidscript/instances
     networks:
       - platform-net
+    healthcheck:
+      # The runtime image has no curl/wget — use node for the probe.
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get('http://127.0.0.1:8080/api/v1/platform/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   platform-redis:
     image: redis:7-alpine
     container_name: platform-redis
+    restart: always
     command: --port 6379 --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - platform_redis:/data
@@ -42,10 +55,14 @@ services:
   platform-postgres:
     image: postgres:15-alpine
     container_name: platform-postgres
+    restart: always
+    env_file:
+      - .env.phase1
     environment:
       POSTGRES_DB: fidscript
       POSTGRES_USER: fidscript
-      POSTGRES_PASSWORD: fidscript_phase1_password
+      # POSTGRES_PASSWORD comes from .env.phase1 (never committed). It only
+      # matters when the volume is first initialised.
     volumes:
       - platform_postgres:/var/lib/postgresql/data
     networks:
@@ -55,6 +72,28 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+
+  # Dashboard (Next.js). Reachable as whatsapp-nextmavens:3000 over the
+  # platform network — Caddy reverse-proxies to it by container name, so no
+  # host port is published (the host's 3000 is taken by self-hosting-www-1).
+  whatsapp-nextmavens:
+    build:
+      context: ../whatsapp-nextmavens
+      dockerfile: Dockerfile
+    image: whatsapp-nextmavens:latest
+    container_name: whatsapp-nextmavens
+    restart: always
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+      NEXT_PUBLIC_API_URL: https://whatsapp.nextmavens.com
+      API_INTERNAL_URL: http://platform-api:8080
+    depends_on:
+      platform-api:
+        condition: service_healthy
+    networks:
+      - platform-net
 
 networks:
   platform-net:

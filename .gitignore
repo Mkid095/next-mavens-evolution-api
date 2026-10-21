@@ -38,6 +38,10 @@ lerna-debug.log*
 /src/env.yml
 /store
 *.env
+# Deployment env files — these hold real secrets, never commit them.
+.env
+.env.*
+!.env.example
 
 /temp/*
 
