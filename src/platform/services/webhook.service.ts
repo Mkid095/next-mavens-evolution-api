@@ -2,6 +2,7 @@ import { Logger } from '@config/logger.config';
 import crypto from 'crypto';
 
 import { platformRepository } from '../repository/platform.repository';
+import { PlatformCrypto } from './crypto';
 
 /**
  * Webhook Service
@@ -10,14 +11,12 @@ import { platformRepository } from '../repository/platform.repository';
  */
 export class WebhookService {
   private readonly logger = new Logger('WebhookService');
-  private readonly encryptionKey: Buffer;
+  private readonly crypto: PlatformCrypto;
 
   constructor() {
-    const keyHex = process.env.PLATFORM_ENCRYPTION_KEY;
-    if (!keyHex) {
-      throw new Error('PLATFORM_ENCRYPTION_KEY env var is required');
-    }
-    this.encryptionKey = Buffer.from(keyHex, 'hex');
+    // Constructed eagerly so a missing PLATFORM_ENCRYPTION_KEY fails fast
+    // at boot rather than on the first webhook write.
+    this.crypto = new PlatformCrypto();
   }
 
   /**
@@ -26,15 +25,17 @@ export class WebhookService {
    * The encrypted secret is stored in the `secret` field.
    * Plaintext secret is returned ONLY at creation time.
    *
-   * `appId` is the internal PlatformApp id (cuid) the webhook is scoped
-   * to — the `appId` column is NOT NULL in the database.
+   * `projectId` is the internal PlatformProject id (cuid) the webhook is
+   * scoped to — the `projectId` column is NOT NULL in the database.
+   * `instanceId` is the PlatformInstance id (not the engine instance id):
+   * the delivery worker matches webhooks on it.
    */
   public async createWebhook(
     accountId: string,
+    projectId: string,
     instanceId: string,
     url: string,
     events: string[],
-    appId: string,
   ): Promise<{
     publicId: string; // wh_xxx — the only ID exposed to clients
     secret: string; // Plaintext secret (only time visible — must be saved by caller)
@@ -44,13 +45,13 @@ export class WebhookService {
   }> {
     const publicId = `wh_${crypto.randomBytes(12).toString('hex')}`;
     const plaintextSecret = crypto.randomBytes(32).toString('hex');
-    const encryptedSecret = this.encrypt(plaintextSecret);
+    const encryptedSecret = this.crypto.encrypt(plaintextSecret);
 
     const webhook = await platformRepository.platformWebhook.create({
       data: {
         publicId,
         accountId,
-        appId,
+        projectId,
         instanceId,
         url,
         events,
@@ -70,14 +71,14 @@ export class WebhookService {
   }
 
   /**
-   * List webhooks for an account.
+   * List webhooks for a project.
    * NEVER returns the internal CUID id or the secret.
    * Returns instanceId as the internal CUID; callers should join
    * with the instance registry to get the display name.
    */
-  public async listWebhooks(accountId: string) {
+  public async listWebhooks(projectId: string) {
     const webhooks = await platformRepository.platformWebhook.findMany({
-      where: { accountId },
+      where: { projectId },
       select: {
         publicId: true,
         instanceId: true,
@@ -119,7 +120,7 @@ export class WebhookService {
    */
   public async rotateSecret(webhookId: string): Promise<{ secret: string }> {
     const plaintextSecret = crypto.randomBytes(32).toString('hex');
-    const encryptedSecret = this.encrypt(plaintextSecret);
+    const encryptedSecret = this.crypto.encrypt(plaintextSecret);
 
     await platformRepository.platformWebhook.update({
       where: { id: webhookId },
@@ -131,30 +132,12 @@ export class WebhookService {
   }
 
   /**
-   * Encrypt plaintext using AES-256-GCM.
-   * Output format: iv:authTag:ciphertext (all hex)
-   */
-  private encrypt(plaintext: string): string {
-    const iv = crypto.randomBytes(16);
-    const cipher = crypto.createCipheriv('aes-256-gcm', this.encryptionKey, iv);
-    let encrypted = cipher.update(plaintext, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-    const authTag = cipher.getAuthTag();
-    return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted}`;
-  }
-
-  /**
-   * Decrypt AES-256-GCM encrypted secret.
+   * Decrypt an AES-256-GCM encrypted secret.
+   * Delegates to the shared crypto helper so the webhook secrets and
+   * the project default tokens share one key and one wire format.
    */
   public decrypt(encrypted: string): string {
-    const [ivHex, authTagHex, ciphertext] = encrypted.split(':');
-    const iv = Buffer.from(ivHex, 'hex');
-    const authTag = Buffer.from(authTagHex, 'hex');
-    const decipher = crypto.createDecipheriv('aes-256-gcm', this.encryptionKey, iv);
-    decipher.setAuthTag(authTag);
-    let decrypted = decipher.update(ciphertext, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-    return decrypted;
+    return this.crypto.decrypt(encrypted);
   }
 
   /**

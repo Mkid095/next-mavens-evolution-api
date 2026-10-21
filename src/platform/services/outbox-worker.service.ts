@@ -58,7 +58,7 @@ export interface OutboxWorkerOptions {
 interface MessageCommandRow {
   id: string;
   accountId: string;
-  appId: string;
+  projectId: string;
   instanceId: string;
   messageId: string;
   type: string;
@@ -490,7 +490,7 @@ export class OutboxWorkerService {
    * UsageService.recordUsage does an upsert keyed on (accountId, operation, periodStart, resourceId),
    * so duplicate calls with the same messageId do not double-count.
    */
-  private async recordUsage(cmd: { accountId: string; appId: string; messageId: string }): Promise<void> {
+  private async recordUsage(cmd: { accountId: string; projectId: string; messageId: string }): Promise<void> {
     try {
       const periodStart = new Date();
       periodStart.setDate(1);
@@ -499,7 +499,7 @@ export class OutboxWorkerService {
       // Import UsageService here to avoid circular deps
       const { UsageService } = await import('./usage.service');
       const usageService = new UsageService();
-      await usageService.recordUsage(cmd.accountId, 'messages', 1, periodStart, cmd.appId);
+      await usageService.recordUsage(cmd.accountId, 'messages', 1, periodStart, cmd.projectId);
     } catch (error) {
       this.logger.error(`Failed to record usage for MessageCommand ${cmd.messageId}: ${error}`);
     }

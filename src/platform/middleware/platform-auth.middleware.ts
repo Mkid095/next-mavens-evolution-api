@@ -17,7 +17,7 @@ export class PlatformAuthMiddleware {
 
   /**
    * Authenticate request via X-API-Key header.
-   * Attaches { accountId, apiKeyId, scopes } to request if valid.
+   * Attaches { accountId, apiKeyId, projectId, scopes } to request if valid.
    */
   public authenticate = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     // Pass through if already authenticated by hybrid auth (session cookie already set platformKey)
@@ -43,9 +43,14 @@ export class PlatformAuthMiddleware {
       }
 
       // Attach to request for downstream use
-      (req as Request & { platformKey?: { accountId: string; apiKeyId: string; scopes: string[] } }).platformKey = {
+      (
+        req as Request & {
+          platformKey?: { accountId: string; apiKeyId: string; projectId: string; scopes: string[] };
+        }
+      ).platformKey = {
         accountId: keyInfo.accountId,
         apiKeyId: keyInfo.id,
+        projectId: keyInfo.projectId,
         scopes: keyInfo.scopes,
       };
 
@@ -70,9 +75,14 @@ export class PlatformAuthMiddleware {
     try {
       const keyInfo = await this.authService.validateApiKey(apiKey);
       if (keyInfo) {
-        (req as Request & { platformKey?: { accountId: string; apiKeyId: string; scopes: string[] } }).platformKey = {
+        (
+          req as Request & {
+            platformKey?: { accountId: string; apiKeyId: string; projectId: string; scopes: string[] };
+          }
+        ).platformKey = {
           accountId: keyInfo.accountId,
           apiKeyId: keyInfo.id,
+          projectId: keyInfo.projectId,
           scopes: keyInfo.scopes,
         };
       }

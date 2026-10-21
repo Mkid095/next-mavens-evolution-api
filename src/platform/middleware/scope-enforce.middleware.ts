@@ -36,9 +36,17 @@ export class ScopeEnforceMiddleware {
       return;
     }
 
-    const platformKey = (req as Request & { platformKey?: { apiKeyId: string } }).platformKey;
+    const platformKey = (req as Request & { platformKey?: { apiKeyId?: string } }).platformKey;
+    const platformSession = (req as Request & { platformSession?: { sessionId: string } }).platformSession;
 
+    // A dashboard session is a full login for the account, so it is not
+    // restricted to the instances a key happens to be bound to. Only an
+    // API key carries bindings.
     if (!platformKey?.apiKeyId) {
+      if (platformSession) {
+        next();
+        return;
+      }
       res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication required' });
       return;
     }

@@ -43,6 +43,7 @@ import { handleMcpHttpRequest } from '../mcp/transport';
 import { hybridAuth } from '../middleware/hybrid-auth.middleware';
 import { tenantResolveMiddleware } from '../middleware/tenant-resolve.middleware';
 import { platformRepository } from '../repository/platform.repository';
+import { resolveRequestProject } from '../services/request-project';
 import { PlatformTenant } from '../types/platform-tenant';
 import { getSessionService } from './auth.routes';
 
@@ -229,6 +230,9 @@ router.post(
       const outcome = await executeTool(tool, parameters ?? {}, { tenant: platformTenant, req });
       const latencyMs = Date.now() - startedAt;
 
+      // The invocation is filed under the project the caller's key names.
+      const project = await resolveRequestProject(req, platformTenant.accountId);
+
       if (isToolError(outcome)) {
         // Fire-and-forget audit + SSE publish so the dashboard can show a
         // live activity feed. We do not block the response on these.
@@ -236,7 +240,8 @@ router.post(
           platformTenant.accountId,
           'MCP_INVOKE_ERROR',
           { type: 'mcp-tool', id: tool },
-          { error: outcome.error.message },
+          { error: outcome.error.message, tool },
+          { projectId: project?.id ?? null },
         );
         void publishMcpEvent(platformTenant.accountId, {
           tool,
@@ -252,8 +257,10 @@ router.post(
         { type: 'mcp-tool', id: tool },
         {
           latencyMs,
+          tool,
           toolParametersKeys: Object.keys(parameters ?? {}),
         },
+        { projectId: project?.id ?? null },
       );
       void publishMcpEvent(platformTenant.accountId, {
         tool,
@@ -270,7 +277,8 @@ router.post(
         platformTenant.accountId,
         'MCP_INVOKE_ERROR',
         { type: 'mcp-tool', id: tool },
-        { error: message },
+        { error: message, tool },
+        { projectId: null },
       );
       void publishMcpEvent(platformTenant.accountId, {
         tool,
@@ -372,9 +380,12 @@ router.get(
       res.status(401).json({ error: 'UNAUTHORIZED' });
       return;
     }
+    const project = await resolveRequestProject(req, platformTenant.accountId);
+
     const rows = await platformRepository.platformAuditLog.findMany({
       where: {
         accountId: platformTenant.accountId,
+        ...(project ? { projectId: project.id } : {}),
         action: { in: ['MCP_INVOKE', 'MCP_INVOKE_ERROR'] },
       },
       orderBy: { createdAt: 'desc' },

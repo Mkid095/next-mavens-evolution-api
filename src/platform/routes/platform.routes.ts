@@ -1,15 +1,14 @@
 import crypto from 'crypto';
 import { Request, Response, Router } from 'express';
 
-import { KNOWN_SCOPES } from '../mcp/tool-registry';
 import { idempotencyMiddleware } from '../middleware/idempotency.middleware';
 import { platformAuthMiddleware } from '../middleware/platform-auth.middleware';
 import { tenantResolveMiddleware } from '../middleware/tenant-resolve.middleware';
 import { platformRepository } from '../repository/platform.repository';
-import { appService } from '../services/app.service';
 import { AuditService } from '../services/audit.service';
 import { callerRoleService } from '../services/caller-role.service';
 import { PlatformAuthService } from '../services/platform-auth.service';
+import { projectService } from '../services/project.service';
 import { settingsService } from '../services/settings.service';
 import { SubscriptionService } from '../services/subscription.service';
 import { TenantService } from '../services/tenant.service';
@@ -166,14 +165,14 @@ router.post(
       });
 
       // Create initial API key — there is no tenant yet, so the account's
-      // default app is resolved explicitly (it is created lazily on demand).
-      const defaultApp = await appService.resolveDefault(account.id);
+      // default project is resolved explicitly (it is created lazily on demand).
+      const defaultProject = await projectService.resolveDefault(account.id);
       const { plaintextKey } = await authService.createApiKey(
         account.id,
+        defaultProject.id,
         'Initial Key',
         ['*'],
         undefined,
-        defaultApp.id,
       );
 
       await auditService.record(account.id, 'ACCOUNT_CREATE', { type: 'account', id: account.publicId });
@@ -331,149 +330,6 @@ router.post(
       res.status(201).json({ id: user.publicId, email: user.email });
     } catch {
       res.status(500).json({ error: 'CREATE_ERROR' });
-    }
-  },
-);
-
-/**
- * List API keys for the authenticated tenant.
- * GET /accounts/:accountId/api-keys
- * accountId in URL must match the authenticated tenant's publicId.
- */
-router.get(
-  '/:accountId/api-keys',
-  platformAuthMiddleware.authenticate,
-  tenantResolveMiddleware.resolve,
-  async (req: Request, res: Response) => {
-    try {
-      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-      if (!platformTenant) {
-        res.status(401).json({ error: 'UNAUTHORIZED' });
-        return;
-      }
-      if (platformTenant.publicId !== req.params.accountId) {
-        res.status(403).json({ error: 'FORBIDDEN' });
-        return;
-      }
-      const keys = await authService.listApiKeys(platformTenant.accountId);
-      // Never return keyHash or plaintext — only public metadata
-      res.json(
-        keys.map((k) => ({
-          id: k.publicId,
-          name: k.name,
-          scopes: k.scopes,
-          // Safe to expose: the prefix is the first 16 chars of the key
-          // ("fidscript_sk_" + 4 hex). The hash and plaintext never leave the server.
-          keyPrefix: k.keyPrefix,
-          createdAt: k.createdAt,
-          expiresAt: k.expiresAt,
-          revokedAt: k.revokedAt,
-          lastUsedAt: k.lastUsedAt,
-        })),
-      );
-    } catch {
-      res.status(500).json({ error: 'FETCH_ERROR' });
-    }
-  },
-);
-
-/**
- * Create API key for the authenticated tenant.
- * POST /accounts/:accountId/api-keys
- * accountId in URL must match the authenticated tenant's publicId.
- *
- * A wildcard-scoped key ('*') is the account's ADMINISTRATIVE credential — it
- * is one of the credentials the admin-only account routes accept — so only an
- * account admin (OWNER/ADMIN) may create one. Members may still create
- * scoped keys.
- */
-router.post(
-  '/:accountId/api-keys',
-  platformAuthMiddleware.authenticate,
-  tenantResolveMiddleware.resolve,
-  async (req: Request, res: Response) => {
-    try {
-      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-      if (!platformTenant) {
-        res.status(401).json({ error: 'UNAUTHORIZED' });
-        return;
-      }
-      if (platformTenant.publicId !== req.params.accountId) {
-        res.status(403).json({ error: 'FORBIDDEN' });
-        return;
-      }
-      const { name, scopes } = req.body ?? {};
-      const requestedScopes: string[] = Array.isArray(scopes) ? scopes : [];
-
-      // Reject a scope the platform does not recognise. A key carrying a
-      // misspelled scope is silently useless — it grants nothing and the
-      // holder has no way to tell.
-      const unknownScopes = requestedScopes.filter((s) => !KNOWN_SCOPES.includes(s));
-      if (unknownScopes.length > 0) {
-        res.status(400).json({
-          error: 'UNKNOWN_SCOPE',
-          message: `Unknown scope${unknownScopes.length > 1 ? 's' : ''}: ${unknownScopes.join(', ')}`,
-          knownScopes: KNOWN_SCOPES,
-        });
-        return;
-      }
-
-      if (requestedScopes.includes('*')) {
-        const caller = await callerRoleService.resolve(req, platformTenant);
-        if (!caller.isAdmin) {
-          res.status(403).json({ error: 'FORBIDDEN', message: caller.reason });
-          return;
-        }
-      }
-
-      const { publicId, plaintextKey } = await authService.createApiKey(
-        platformTenant.accountId,
-        name ?? 'Unnamed Key',
-        requestedScopes,
-        undefined,
-        platformTenant.defaultApp.id,
-      );
-      idempotencyMiddleware.complete(
-        req,
-        res,
-        { id: publicId, name, scopes: requestedScopes, apiKey: plaintextKey },
-        publicId,
-      );
-      res.status(201).json({ id: publicId, name, scopes: requestedScopes, apiKey: plaintextKey });
-    } catch {
-      res.status(500).json({ error: 'CREATE_ERROR' });
-    }
-  },
-);
-
-/**
- * Revoke an API key (sets revokedAt to now).
- * DELETE /accounts/:accountId/api-keys/:keyId
- * keyId is the public ID (key_xxx).
- */
-router.delete(
-  '/:accountId/api-keys/:keyId',
-  platformAuthMiddleware.authenticate,
-  tenantResolveMiddleware.resolve,
-  async (req: Request, res: Response) => {
-    try {
-      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-      if (!platformTenant) {
-        res.status(401).json({ error: 'UNAUTHORIZED' });
-        return;
-      }
-      if (platformTenant.publicId !== req.params.accountId) {
-        res.status(403).json({ error: 'FORBIDDEN' });
-        return;
-      }
-      const ok = await authService.revokeApiKey(req.params.keyId, platformTenant.accountId);
-      if (!ok) {
-        res.status(404).json({ error: 'NOT_FOUND' });
-        return;
-      }
-      res.json({ success: true });
-    } catch {
-      res.status(500).json({ error: 'REVOKE_ERROR' });
     }
   },
 );

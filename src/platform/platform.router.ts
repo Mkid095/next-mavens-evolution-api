@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { Request, Response, Router } from 'express';
 
+import { apiAuditMiddleware } from './middleware/api-audit.middleware';
 import { entitlementMiddleware } from './middleware/entitlement.middleware';
 import { hybridAuth } from './middleware/hybrid-auth.middleware';
 import { idempotencyMiddleware } from './middleware/idempotency.middleware';
@@ -15,10 +16,12 @@ import { platformRepository } from './repository/platform.repository';
  * (this is a read channel, not a write).
  */
 import { activityRoutes } from './routes/activity.routes';
+import { apiKeyRoutes } from './routes/api-key.routes';
 import { authRouter, getCompanyGatePassword, getSessionService } from './routes/auth.routes';
 import { contactRoutes } from './routes/contact.routes';
 import { groupRoutes } from './routes/group.routes';
 import { instanceRoutes } from './routes/instance.routes';
+import { logRoutes } from './routes/log.routes';
 import { mcpRouter } from './routes/mcp.routes';
 import { messageRoutes } from './routes/message.routes';
 import { messagePublicRoutes } from './routes/message-public.routes';
@@ -26,8 +29,9 @@ import { platformRoutes } from './routes/platform.routes';
 import { projectRoutes } from './routes/project.routes';
 import { createSseRouter } from './routes/sse.routes';
 import { webhookRoutes } from './routes/webhook.routes';
-import { appService } from './services/app.service';
 import { AuditService } from './services/audit.service';
+import { projectService } from './services/project.service';
+import { resolveRequestProject } from './services/request-project';
 import { PlatformTenant } from './types/platform-tenant';
 
 /** PBKDF2-based password hashing (no external dependency) */
@@ -41,11 +45,21 @@ const router: Router = Router();
 const auditService = new AuditService();
 
 /**
+ * Record every tenant-scoped REST call in the audit log.
+ *
+ * Mounted FIRST so it sees every request that enters the platform
+ * router. It only writes rows for `/api/v1/accounts/...` paths and it
+ * writes them AFTER the response was flushed, so it never delays the
+ * caller.
+ */
+router.use(apiAuditMiddleware.track);
+
+/**
  * Full middleware chain for authenticated platform routes.
  * Order: platformAuth → tenantResolve → idempotency → scopeEnforce → rateLimit
  *
  * The message quota is NOT checked here. This chain serves the account,
- * user, API-key, project, app, contact, group and webhook routes — none of
+ * user, API-key, project, contact, group and webhook routes — none of
  * which send a WhatsApp message. Gating them on the quota meant that once
  * an account spent its monthly allowance every *read* answered 402, and an
  * account with no plan at all was locked out of reading anything.
@@ -128,11 +142,17 @@ router.post('/platform/onboard', async (req: Request, res: Response) => {
       : await platformRepository.platformPlan.findFirst();
 
     // Create API key — there is no tenant yet, so the account's default
-    // app is resolved explicitly (created lazily on demand).
+    // project is resolved explicitly (created lazily on demand).
     const { PlatformAuthService } = await import('./services/platform-auth.service');
     const authService = new PlatformAuthService();
-    const defaultApp = await appService.resolveDefault(account.id);
-    const { plaintextKey } = await authService.createApiKey(account.id, 'Default Key', ['*'], undefined, defaultApp.id);
+    const defaultProject = await projectService.resolveDefault(account.id);
+    const { plaintextKey } = await authService.createApiKey(
+      account.id,
+      defaultProject.id,
+      'Default Key',
+      ['*'],
+      undefined,
+    );
 
     // Create default subscription
     await platformRepository.platformSubscription.create({
@@ -180,20 +200,29 @@ router.use('/platform/mcp', mcpRouter);
 router.use('/platform/activity', hybridAuth(getSessionService()), tenantResolveMiddleware.resolve, activityRoutes);
 
 /**
- * Web console instance routes — session auth + API key auth.
- * Mount BEFORE platformRoutes so more-specific instance paths are matched first.
+ * Web console routes — session auth + API key auth.
+ * Mounted BEFORE the API-key-only chain so more-specific paths are matched first.
  * hybridAuth accepts EITHER X-API-Key OR sessionId cookie.
+ *
+ * All the account-scoped sub-routers are mounted under ONE chain so the
+ * credential is validated once per request, not once per router.
  */
 const hybridChain = [hybridAuth(getSessionService()), tenantResolveMiddleware.resolve];
-router.use('/accounts', hybridChain, instanceRoutes);
+router.use(
+  '/accounts',
+  hybridChain,
+  instanceRoutes,
+  apiKeyRoutes,
+  webhookRoutes,
+  contactRoutes,
+  groupRoutes,
+  logRoutes,
+);
 
 /**
  * Mount account/user routes (API-key auth only).
  */
-router.use('/accounts', middlewareChain, platformRoutes);
-router.use('/accounts', middlewareChain, projectRoutes);
-router.use('/accounts', middlewareChain, contactRoutes);
-router.use('/accounts', middlewareChain, groupRoutes);
+router.use('/accounts', middlewareChain, platformRoutes, projectRoutes);
 
 /**
  * Mount instance-scoped message command route.
@@ -228,11 +257,6 @@ router.use('/instances', instanceChain, messageRoutes);
 router.use('/messages', messagePublicRoutes);
 
 /**
- * Mount webhook routes
- */
-router.use('/webhooks', middlewareChain, webhookRoutes);
-
-/**
  * List available plans
  * GET /api/v1/platform/plans
  */
@@ -261,6 +285,11 @@ router.get('/platform/health', async (req: Request, res: Response) => {
 
 /**
  * Get current tenant info — hybrid auth (session or API key)
+ *
+ * The response carries the project the credential is scoped to: an API
+ * key names its own project, a dashboard session falls back to the
+ * account's default project. The CLI uses this to discover the project
+ * it should call the project-scoped routes with.
  */
 router.get(
   '/me',
@@ -272,11 +301,16 @@ router.get(
       res.status(401).json({ error: 'UNAUTHORIZED' });
       return;
     }
+
+    const project = await resolveRequestProject(req, platformTenant.accountId);
+
     res.json({
       accountId: platformTenant.accountId,
       publicId: platformTenant.publicId,
       status: platformTenant.status,
       plan: platformTenant.plan,
+      projectId: project?.publicId ?? null,
+      project: project ? { id: project.publicId } : null,
     });
   },
 );

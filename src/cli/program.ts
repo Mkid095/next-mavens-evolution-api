@@ -13,6 +13,7 @@ import { registerInstancesCommand } from './commands/instances';
 import { registerKeysCommand } from './commands/keys';
 import { registerMcpCommand } from './commands/mcp';
 import { registerMessagesCommand } from './commands/messages';
+import { registerProjectsCommand } from './commands/projects';
 import { registerWebhooksCommand } from './commands/webhooks';
 import { addCommonOptions } from './options';
 
@@ -65,6 +66,7 @@ Configuration:
   program.option('--json', 'Print raw JSON where the command supports it');
 
   registerAuthCommands(program);
+  registerProjectsCommand(program);
   registerInstancesCommand(program);
   registerMessagesCommand(program);
   registerKeysCommand(program);

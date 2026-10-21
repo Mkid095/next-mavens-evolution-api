@@ -4,6 +4,41 @@ import { InputJsonValue } from '@prisma/client/runtime/library';
 import { platformRepository } from '../repository/platform.repository';
 
 /**
+ * The categories the project logs endpoint can filter on.
+ *
+ *  - `api`     — REST calls handled by the platform
+ *  - `mcp`     — MCP tool invocations
+ *  - `auth`    — logins and other authentication events
+ *  - `message` — WhatsApp messages sent (from PlatformMessageCommand)
+ */
+export type AuditCategory = 'api' | 'mcp' | 'auth' | 'message';
+
+/**
+ * Derive the category of an audit action.
+ *
+ * The action prefix is the contract: `MCP_*` is an MCP invocation,
+ * `AUTH_*` is an authentication event, `MESSAGE_*` is a message and
+ * everything else was driven by a REST call.
+ */
+export function categorizeAction(action: string): AuditCategory {
+  const upper = (action ?? '').toUpperCase();
+  if (upper.startsWith('MCP_')) return 'mcp';
+  if (upper.startsWith('AUTH_') || upper.startsWith('LOGIN')) return 'auth';
+  if (upper.startsWith('MESSAGE_')) return 'message';
+  return 'api';
+}
+
+/**
+ * Options accepted by `AuditService.record`.
+ */
+export interface AuditRecordOptions {
+  /** The project the event belongs to. `null` for account-level events. */
+  projectId?: string | null;
+  /** Overrides the category derived from the action. */
+  category?: AuditCategory;
+}
+
+/**
  * Audit Service
  * Records all mutating operations on the platform.
  * Secrets, passwords, message content, and API keys are never stored in audit records.
@@ -17,18 +52,23 @@ export class AuditService {
    * @param action - The action identifier (e.g., "ACCOUNT_ONBOARD", "USER_CREATE")
    * @param resource - The resource affected { type, id }
    * @param metadata - Optional metadata (passwords, tokens, secrets are redacted)
+   * @param options - Project scope and category
    */
   public async record(
     accountId: string,
     action: string,
     resource: { type: string; id: string },
     metadata?: Record<string, unknown>,
+    options?: AuditRecordOptions,
   ): Promise<void> {
     const safeMetadata = this.sanitizeMetadata(metadata);
+    const category = options?.category ?? categorizeAction(action);
+    safeMetadata.category = category;
 
     const row = await platformRepository.platformAuditLog.create({
       data: {
         accountId,
+        projectId: options?.projectId ?? null,
         action,
         resource: resource.type,
         resourceId: resource.id,
@@ -53,10 +93,10 @@ export class AuditService {
         id: row.id,
         kind: 'audit',
         action,
+        category,
         resourceType: resource.type,
         resourceId: resource.id,
-        projectId: typeof safeMetadata.projectId === 'string' ? safeMetadata.projectId : undefined,
-        appId: typeof safeMetadata.appId === 'string' ? safeMetadata.appId : undefined,
+        projectId: options?.projectId ?? undefined,
         instancePublicId:
           typeof safeMetadata.instancePublicId === 'string'
             ? safeMetadata.instancePublicId

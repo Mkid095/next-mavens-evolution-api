@@ -4,12 +4,13 @@ import { Request, Response, Router } from 'express';
 import { evolutionAdapter } from '../adapters/evolution.adapter';
 import { hybridAuth } from '../middleware/hybrid-auth.middleware';
 import { idempotencyMiddleware } from '../middleware/idempotency.middleware';
+import { scopeEnforceMiddleware } from '../middleware/scope-enforce.middleware';
 import { tenantResolveMiddleware } from '../middleware/tenant-resolve.middleware';
 import { platformRepository } from '../repository/platform.repository';
 import { AuditService } from '../services/audit.service';
 import { InstanceService } from '../services/instance.service';
-import { PlatformTenant } from '../types/platform-tenant';
 import { getSessionService } from './auth.routes';
+import { requireProjectContext, requireProjectInstance } from './project-scope';
 
 const router: Router = Router();
 const auditService = new AuditService();
@@ -44,28 +45,21 @@ function toInstanceDTO(row: {
 }
 
 /**
- * List instances for the authenticated tenant.
- * GET /accounts/:accountId/instances
- * accountId in URL must match the authenticated tenant's publicId.
+ * List the instances of a project.
+ * GET /accounts/:accountId/projects/:projectPublicId/instances
  */
 router.get(
-  '/:accountId/instances',
+  '/:accountId/projects/:projectPublicId/instances',
   hybridAuth(getSessionService()),
   tenantResolveMiddleware.resolve,
+  scopeEnforceMiddleware.enforce,
   async (req: Request, res: Response) => {
     try {
-      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-      if (!platformTenant) {
-        res.status(401).json({ error: 'UNAUTHORIZED' });
-        return;
-      }
-      if (platformTenant.publicId !== req.params.accountId) {
-        res.status(403).json({ error: 'FORBIDDEN' });
-        return;
-      }
+      const context = await requireProjectContext(req, res);
+      if (!context) return;
 
       const instances = await platformRepository.platformInstance.findMany({
-        where: { accountId: platformTenant.accountId },
+        where: { projectId: context.project.id },
         select: {
           id: true,
           publicId: true,
@@ -87,34 +81,26 @@ router.get(
 );
 
 /**
- * Create instance for the authenticated tenant.
- * POST /accounts/:accountId/instances
- * accountId in URL must match the authenticated tenant's publicId.
+ * Create an instance in a project.
+ * POST /accounts/:accountId/projects/:projectPublicId/instances
+ * Body: { name }
+ *
+ * Idempotent on (accountId, name): a repeat returns 200 with the
+ * existing instance instead of creating a second one.
  */
 router.post(
-  '/:accountId/instances',
+  '/:accountId/projects/:projectPublicId/instances',
   hybridAuth(getSessionService()),
   tenantResolveMiddleware.resolve,
+  scopeEnforceMiddleware.enforce,
   idempotencyMiddleware.check,
   async (req: Request, res: Response) => {
     try {
-      const req2 = req as Request & {
-        platformKey?: { accountId: string; apiKeyId: string; scopes: string[] };
-        platformTenant?: PlatformTenant;
-        idempotencyKey?: string;
-      };
-      const platformTenant = req2.platformTenant;
-      if (!platformTenant) {
-        res.status(401).json({ error: 'UNAUTHORIZED' });
-        return;
-      }
-      if (platformTenant.publicId !== req.params.accountId) {
-        res.status(403).json({ error: 'FORBIDDEN' });
-        return;
-      }
+      const context = await requireProjectContext(req, res);
+      if (!context) return;
 
-      const { name } = req.body;
-      if (!name) {
+      const { name } = req.body ?? {};
+      if (!name || typeof name !== 'string') {
         res.status(400).json({ error: 'MISSING_FIELDS', message: 'name is required' });
         return;
       }
@@ -124,10 +110,17 @@ router.post(
       // the instance name is unique per account and the client-supplied idempotency
       // key is scoped to (accountId, apiKeyId, idempotencyKey) in the middleware.
       const existing = await platformRepository.platformInstance.findFirst({
-        where: { accountId: platformTenant.accountId, name },
+        where: { accountId: context.tenant.accountId, name },
       });
 
       if (existing) {
+        if (existing.projectId !== context.project.id) {
+          res.status(409).json({
+            error: 'NAME_TAKEN',
+            message: 'An instance with this name already exists in another project',
+          });
+          return;
+        }
         const responseBody = toInstanceDTO(existing);
         await idempotencyMiddleware.complete(req, res, responseBody, existing.publicId);
         res.status(200).json(responseBody);
@@ -140,12 +133,15 @@ router.post(
       // or-create the Evolution row against a private member variable
       // that doesn't exist on waMonitor (silent failure → no QR).
       const instanceService = new InstanceService();
-      const instance = await instanceService.create(platformTenant.accountId, name, platformTenant.defaultApp.id);
+      const instance = await instanceService.create(context.tenant.accountId, context.project.id, name);
 
-      await auditService.record(platformTenant.accountId, 'INSTANCE_CREATE', {
-        type: 'instance',
-        id: instance.publicId,
-      });
+      await auditService.record(
+        context.tenant.accountId,
+        'INSTANCE_CREATE',
+        { type: 'instance', id: instance.publicId },
+        { instancePublicId: instance.publicId },
+        { projectId: context.project.id },
+      );
 
       const responseBody = toInstanceDTO(instance);
 
@@ -160,30 +156,23 @@ router.post(
 
 /**
  * Get instance by publicId.
- * GET /accounts/:accountId/instances/:instId
- * accountId in URL must match the authenticated tenant's publicId.
+ * GET /accounts/:accountId/projects/:projectPublicId/instances/:instId
  * instId is the public ID (inst_xxx).
  */
 router.get(
-  '/:accountId/instances/:instId',
+  '/:accountId/projects/:projectPublicId/instances/:instId',
   hybridAuth(getSessionService()),
   tenantResolveMiddleware.resolve,
+  scopeEnforceMiddleware.enforce,
   async (req: Request, res: Response) => {
     try {
-      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-      if (!platformTenant) {
-        res.status(401).json({ error: 'UNAUTHORIZED' });
-        return;
-      }
-      if (platformTenant.publicId !== req.params.accountId) {
-        res.status(403).json({ error: 'FORBIDDEN' });
-        return;
-      }
+      const context = await requireProjectContext(req, res);
+      if (!context) return;
 
       const instance = await platformRepository.platformInstance.findFirst({
         where: {
           publicId: req.params.instId,
-          accountId: platformTenant.accountId,
+          projectId: context.project.id,
         },
       });
 
@@ -232,43 +221,34 @@ router.get(
 
 /**
  * Connect instance.
- * POST /accounts/:accountId/instances/:instId/connect
- * instId is the public ID (inst_xxx).
+ * POST /accounts/:accountId/projects/:projectPublicId/instances/:instId/connect
+ *
+ * The response deliberately carries NO QR code: the pairing QR is
+ * delivered by the SSE stream, or fetched with the GET above once the
+ * engine has produced it.
  */
 router.post(
-  '/:accountId/instances/:instId/connect',
+  '/:accountId/projects/:projectPublicId/instances/:instId/connect',
   hybridAuth(getSessionService()),
   tenantResolveMiddleware.resolve,
+  scopeEnforceMiddleware.enforce,
   async (req: Request, res: Response) => {
     try {
-      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-      if (!platformTenant) {
-        res.status(401).json({ error: 'UNAUTHORIZED' });
-        return;
-      }
-      if (platformTenant.publicId !== req.params.accountId) {
-        res.status(403).json({ error: 'FORBIDDEN' });
-        return;
-      }
+      const context = await requireProjectContext(req, res);
+      if (!context) return;
 
-      const instance = await platformRepository.platformInstance.findFirst({
-        where: {
-          publicId: req.params.instId,
-          accountId: platformTenant.accountId,
-        },
-      });
-
-      if (!instance) {
-        res.status(404).json({ error: 'NOT_FOUND' });
-        return;
-      }
+      const instance = await requireProjectInstance(req, res, context.project.id);
+      if (!instance) return;
 
       await evolutionAdapter.connectInstance(instance.id);
 
-      await auditService.record(platformTenant.accountId, 'INSTANCE_CONNECT', {
-        type: 'instance',
-        id: instance.publicId,
-      });
+      await auditService.record(
+        context.tenant.accountId,
+        'INSTANCE_CONNECT',
+        { type: 'instance', id: instance.publicId },
+        { instancePublicId: instance.publicId },
+        { projectId: context.project.id },
+      );
 
       res.json({ success: true, status: 'CONNECTING' });
     } catch {
@@ -279,43 +259,30 @@ router.post(
 
 /**
  * Disconnect instance.
- * POST /accounts/:accountId/instances/:instId/disconnect
- * instId is the public ID (inst_xxx).
+ * POST /accounts/:accountId/projects/:projectPublicId/instances/:instId/disconnect
  */
 router.post(
-  '/:accountId/instances/:instId/disconnect',
+  '/:accountId/projects/:projectPublicId/instances/:instId/disconnect',
   hybridAuth(getSessionService()),
   tenantResolveMiddleware.resolve,
+  scopeEnforceMiddleware.enforce,
   async (req: Request, res: Response) => {
     try {
-      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-      if (!platformTenant) {
-        res.status(401).json({ error: 'UNAUTHORIZED' });
-        return;
-      }
-      if (platformTenant.publicId !== req.params.accountId) {
-        res.status(403).json({ error: 'FORBIDDEN' });
-        return;
-      }
+      const context = await requireProjectContext(req, res);
+      if (!context) return;
 
-      const instance = await platformRepository.platformInstance.findFirst({
-        where: {
-          publicId: req.params.instId,
-          accountId: platformTenant.accountId,
-        },
-      });
-
-      if (!instance) {
-        res.status(404).json({ error: 'NOT_FOUND' });
-        return;
-      }
+      const instance = await requireProjectInstance(req, res, context.project.id);
+      if (!instance) return;
 
       await evolutionAdapter.disconnectInstance(instance.id);
 
-      await auditService.record(platformTenant.accountId, 'INSTANCE_DISCONNECT', {
-        type: 'instance',
-        id: instance.publicId,
-      });
+      await auditService.record(
+        context.tenant.accountId,
+        'INSTANCE_DISCONNECT',
+        { type: 'instance', id: instance.publicId },
+        { instancePublicId: instance.publicId },
+        { projectId: context.project.id },
+      );
 
       res.json({ success: true, status: 'DISCONNECTED' });
     } catch {
@@ -326,43 +293,30 @@ router.post(
 
 /**
  * Restart instance.
- * POST /accounts/:accountId/instances/:instId/restart
- * instId is the public ID (inst_xxx).
+ * POST /accounts/:accountId/projects/:projectPublicId/instances/:instId/restart
  */
 router.post(
-  '/:accountId/instances/:instId/restart',
+  '/:accountId/projects/:projectPublicId/instances/:instId/restart',
   hybridAuth(getSessionService()),
   tenantResolveMiddleware.resolve,
+  scopeEnforceMiddleware.enforce,
   async (req: Request, res: Response) => {
     try {
-      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-      if (!platformTenant) {
-        res.status(401).json({ error: 'UNAUTHORIZED' });
-        return;
-      }
-      if (platformTenant.publicId !== req.params.accountId) {
-        res.status(403).json({ error: 'FORBIDDEN' });
-        return;
-      }
+      const context = await requireProjectContext(req, res);
+      if (!context) return;
 
-      const instance = await platformRepository.platformInstance.findFirst({
-        where: {
-          publicId: req.params.instId,
-          accountId: platformTenant.accountId,
-        },
-      });
-
-      if (!instance) {
-        res.status(404).json({ error: 'NOT_FOUND' });
-        return;
-      }
+      const instance = await requireProjectInstance(req, res, context.project.id);
+      if (!instance) return;
 
       await evolutionAdapter.restartInstance(instance.id);
 
-      await auditService.record(platformTenant.accountId, 'INSTANCE_RESTART', {
-        type: 'instance',
-        id: instance.publicId,
-      });
+      await auditService.record(
+        context.tenant.accountId,
+        'INSTANCE_RESTART',
+        { type: 'instance', id: instance.publicId },
+        { instancePublicId: instance.publicId },
+        { projectId: context.project.id },
+      );
 
       res.json({ success: true, status: 'RESTARTING' });
     } catch {
@@ -373,37 +327,21 @@ router.post(
 
 /**
  * Get canonical instance state.
- * GET /accounts/:accountId/instances/:instId/state
- * instId is the public ID (inst_xxx).
+ * GET /accounts/:accountId/projects/:projectPublicId/instances/:instId/state
  * Returns CONNECTED/CONNECTING/CREATED/DISCONNECTED/SUSPENDED — never JIDs or engine refs.
  */
 router.get(
-  '/:accountId/instances/:instId/state',
+  '/:accountId/projects/:projectPublicId/instances/:instId/state',
   hybridAuth(getSessionService()),
   tenantResolveMiddleware.resolve,
+  scopeEnforceMiddleware.enforce,
   async (req: Request, res: Response) => {
     try {
-      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-      if (!platformTenant) {
-        res.status(401).json({ error: 'UNAUTHORIZED' });
-        return;
-      }
-      if (platformTenant.publicId !== req.params.accountId) {
-        res.status(403).json({ error: 'FORBIDDEN' });
-        return;
-      }
+      const context = await requireProjectContext(req, res);
+      if (!context) return;
 
-      const instance = await platformRepository.platformInstance.findFirst({
-        where: {
-          publicId: req.params.instId,
-          accountId: platformTenant.accountId,
-        },
-      });
-
-      if (!instance) {
-        res.status(404).json({ error: 'NOT_FOUND' });
-        return;
-      }
+      const instance = await requireProjectInstance(req, res, context.project.id);
+      if (!instance) return;
 
       const state = await evolutionAdapter.getInstanceState(instance.id);
 
@@ -422,36 +360,20 @@ router.get(
 
 /**
  * Delete instance.
- * DELETE /accounts/:accountId/instances/:instId
- * instId is the public ID (inst_xxx).
+ * DELETE /accounts/:accountId/projects/:projectPublicId/instances/:instId
  */
 router.delete(
-  '/:accountId/instances/:instId',
+  '/:accountId/projects/:projectPublicId/instances/:instId',
   hybridAuth(getSessionService()),
   tenantResolveMiddleware.resolve,
+  scopeEnforceMiddleware.enforce,
   async (req: Request, res: Response) => {
     try {
-      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-      if (!platformTenant) {
-        res.status(401).json({ error: 'UNAUTHORIZED' });
-        return;
-      }
-      if (platformTenant.publicId !== req.params.accountId) {
-        res.status(403).json({ error: 'FORBIDDEN' });
-        return;
-      }
+      const context = await requireProjectContext(req, res);
+      if (!context) return;
 
-      const instance = await platformRepository.platformInstance.findFirst({
-        where: {
-          publicId: req.params.instId,
-          accountId: platformTenant.accountId,
-        },
-      });
-
-      if (!instance) {
-        res.status(404).json({ error: 'NOT_FOUND' });
-        return;
-      }
+      const instance = await requireProjectInstance(req, res, context.project.id);
+      if (!instance) return;
 
       // Disconnect first if connected
       try {
@@ -464,10 +386,13 @@ router.delete(
         where: { id: instance.id },
       });
 
-      await auditService.record(platformTenant.accountId, 'INSTANCE_DELETE', {
-        type: 'instance',
-        id: req.params.instId,
-      });
+      await auditService.record(
+        context.tenant.accountId,
+        'INSTANCE_DELETE',
+        { type: 'instance', id: instance.publicId },
+        { instancePublicId: instance.publicId },
+        { projectId: context.project.id },
+      );
 
       res.json({ success: true });
     } catch {
@@ -478,30 +403,25 @@ router.delete(
 
 /**
  * Bind API key to instance.
- * POST /accounts/:accountId/api-keys/:keyId/instances/:instId/bind
+ * POST /accounts/:accountId/projects/:projectPublicId/api-keys/:keyId/instances/:instId/bind
  * keyId and instId are PUBLIC IDs (key_xxx and inst_xxx).
  */
 router.post(
-  '/:accountId/api-keys/:keyId/instances/:instId/bind',
+  '/:accountId/projects/:projectPublicId/api-keys/:keyId/instances/:instId/bind',
   hybridAuth(getSessionService()),
   tenantResolveMiddleware.resolve,
+  scopeEnforceMiddleware.enforce,
   async (req: Request, res: Response) => {
     try {
-      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-      if (!platformTenant) {
-        res.status(401).json({ error: 'UNAUTHORIZED' });
-        return;
-      }
-      if (platformTenant.publicId !== req.params.accountId) {
-        res.status(403).json({ error: 'FORBIDDEN' });
-        return;
-      }
+      const context = await requireProjectContext(req, res);
+      if (!context) return;
 
       // Look up the actual API key database ID from the public ID
       const apiKey = await platformRepository.platformApiKey.findFirst({
         where: {
           publicId: req.params.keyId,
-          accountId: platformTenant.accountId,
+          accountId: context.tenant.accountId,
+          projectId: context.project.id,
         },
       });
 
@@ -511,17 +431,8 @@ router.post(
       }
 
       // Look up the actual instance database ID from the public ID
-      const instance = await platformRepository.platformInstance.findFirst({
-        where: {
-          publicId: req.params.instId,
-          accountId: platformTenant.accountId,
-        },
-      });
-
-      if (!instance) {
-        res.status(404).json({ error: 'NOT_FOUND', message: 'Instance not found' });
-        return;
-      }
+      const instance = await requireProjectInstance(req, res, context.project.id);
+      if (!instance) return;
 
       // Create the binding record
       await platformRepository.platformApiKeyInstance.create({
@@ -532,10 +443,11 @@ router.post(
       });
 
       await auditService.record(
-        platformTenant.accountId,
+        context.tenant.accountId,
         'API_KEY_BIND',
         { type: 'api-key-instance', id: '' },
         { apiKeyId: req.params.keyId, instanceId: req.params.instId },
+        { projectId: context.project.id },
       );
 
       res.status(201).json({ success: true });

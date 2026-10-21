@@ -1,13 +1,14 @@
 import { Logger } from '@config/logger.config';
 import { Request, Response, Router } from 'express';
 
+import { hybridAuth } from '../middleware/hybrid-auth.middleware';
 import { idempotencyMiddleware } from '../middleware/idempotency.middleware';
-import { platformAuthMiddleware } from '../middleware/platform-auth.middleware';
 import { tenantResolveMiddleware } from '../middleware/tenant-resolve.middleware';
 import { platformRepository } from '../repository/platform.repository';
 import { AuditService } from '../services/audit.service';
 import { WebhookService } from '../services/webhook.service';
-import { PlatformTenant } from '../types/platform-tenant';
+import { getSessionService } from './auth.routes';
+import { requireProjectContext } from './project-scope';
 
 const router: Router = Router();
 const webhookService = new WebhookService();
@@ -15,18 +16,31 @@ const auditService = new AuditService();
 const logger = new Logger('WebhookRoutes');
 
 /**
- * List webhooks for the authenticated account.
- * GET /webhooks
- * Returns public IDs only — `instanceId` is the public instance id (inst_xxx).
+ * Load a webhook by its public id and check that it belongs to the project.
+ */
+async function findProjectWebhook(publicId: string, projectId: string) {
+  return platformRepository.platformWebhook.findFirst({
+    where: { publicId, projectId },
+  });
+}
+
+/**
+ * List the webhooks of a project.
+ * GET /accounts/:accountId/projects/:projectPublicId/webhooks
+ *
+ * Returns public IDs only — `instanceId` is the public instance id
+ * (inst_xxx).
  */
 router.get(
-  '/',
-  platformAuthMiddleware.authenticate,
+  '/:accountId/projects/:projectPublicId/webhooks',
+  hybridAuth(getSessionService()),
   tenantResolveMiddleware.resolve,
   async (req: Request, res: Response) => {
     try {
-      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-      const webhooks = await webhookService.listWebhooks(platformTenant!.accountId);
+      const context = await requireProjectContext(req, res);
+      if (!context) return;
+
+      const webhooks = await webhookService.listWebhooks(context.project.id);
 
       // The stored `instanceId` is the internal PlatformInstance id. Translate
       // it to the public id (inst_xxx) so the list matches what the create
@@ -46,7 +60,7 @@ router.get(
           select: { id: true, name: true },
         });
         const legacyPlatformInstances = await platformRepository.platformInstance.findMany({
-          where: { name: { in: engineInstances.map((e) => e.name) }, accountId: platformTenant!.accountId },
+          where: { name: { in: engineInstances.map((e) => e.name) }, projectId: context.project.id },
           select: { name: true, publicId: true },
         });
         const publicIdByName = new Map(legacyPlatformInstances.map((i) => [i.name, i.publicId]));
@@ -70,7 +84,7 @@ router.get(
 
 /**
  * Create a webhook for a specific instance.
- * POST /webhooks
+ * POST /accounts/:accountId/projects/:projectPublicId/webhooks
  *
  * Body: { instanceId, url, events }
  *   `instanceId` is the PUBLIC instance id (`inst_xxx`) — the same identifier
@@ -80,15 +94,18 @@ router.get(
  * Response: { webhook: { publicId, url, events, instanceId, secret } }
  *   `secret` is the PLAINTEXT signing secret and is shown ONLY here, at
  *   creation time — it is stored encrypted (AES-256-GCM) and can never be
- *   read back. `POST /webhooks/:webhookId/rotate` issues a new one.
+ *   read back. `POST .../webhooks/:webhookId/rotate` issues a new one.
  */
 router.post(
-  '/',
-  platformAuthMiddleware.authenticate,
+  '/:accountId/projects/:projectPublicId/webhooks',
+  hybridAuth(getSessionService()),
   tenantResolveMiddleware.resolve,
+  idempotencyMiddleware.check,
   async (req: Request, res: Response) => {
     try {
-      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
+      const context = await requireProjectContext(req, res);
+      if (!context) return;
+
       const { instanceId, url, events } = req.body ?? {};
 
       if (!instanceId || !url) {
@@ -100,7 +117,7 @@ router.post(
       // the engine Instance row it owns. The engine CUID is accepted as a
       // fallback so callers written against the old contract keep working.
       let platformInstance = await platformRepository.platformInstance.findFirst({
-        where: { publicId: instanceId, accountId: platformTenant!.accountId },
+        where: { publicId: instanceId, projectId: context.project.id },
       });
 
       let engineInstance = platformInstance
@@ -112,24 +129,24 @@ router.post(
         if (byEngineId) {
           engineInstance = byEngineId;
           platformInstance = await platformRepository.platformInstance.findFirst({
-            where: { name: byEngineId.name, accountId: platformTenant!.accountId },
+            where: { name: byEngineId.name, projectId: context.project.id },
           });
         }
       }
 
-      // Validate the instance exists and belongs to this account. Ownership is
+      // Validate the instance exists and belongs to this project. Ownership is
       // proven by the PlatformInstance lookup above (it is scoped to the
-      // caller's account); the engine row's `platformAccountId` is a second,
+      // project's instances); the engine row's `platformAccountId` is a second,
       // optional confirmation — it is null on instances provisioned before
       // that column was populated, and a mismatch means the two rows are
       // out of sync.
       const engineOwnedByOther =
-        engineInstance?.platformAccountId != null && engineInstance.platformAccountId !== platformTenant!.accountId;
+        engineInstance?.platformAccountId != null && engineInstance.platformAccountId !== context.tenant.accountId;
 
       if (!platformInstance || !engineInstance || engineOwnedByOther) {
         res
           .status(400)
-          .json({ error: 'INVALID_INSTANCE', message: 'Instance not found or does not belong to this account' });
+          .json({ error: 'INVALID_INSTANCE', message: 'Instance not found or does not belong to this project' });
         return;
       }
 
@@ -137,17 +154,20 @@ router.post(
       // (the lifecycle event log is keyed by PlatformInstance.id) — the same
       // value the MCP `create_webhook` tool stores.
       const webhook = await webhookService.createWebhook(
-        platformTenant!.accountId,
+        context.tenant.accountId,
+        context.project.id,
         platformInstance.id,
         url,
         events || [],
-        platformTenant!.defaultApp.id,
       );
 
-      await auditService.record(platformTenant!.accountId, 'WEBHOOK_CREATE', {
-        type: 'webhook',
-        id: webhook.publicId,
-      });
+      await auditService.record(
+        context.tenant.accountId,
+        'WEBHOOK_CREATE',
+        { type: 'webhook', id: webhook.publicId },
+        undefined,
+        { projectId: context.project.id },
+      );
 
       const responseBody = {
         webhook: {
@@ -173,35 +193,36 @@ router.post(
 );
 
 /**
- * Update a webhook (must belong to authenticated account).
- * PATCH /webhooks/:webhookId
+ * Update a webhook (must belong to the project).
+ * PATCH /accounts/:accountId/projects/:projectPublicId/webhooks/:webhookId
  * :webhookId must be the publicId (wh_xxx), never an internal CUID.
  */
 router.patch(
-  '/:webhookId',
-  platformAuthMiddleware.authenticate,
+  '/:accountId/projects/:projectPublicId/webhooks/:webhookId',
+  hybridAuth(getSessionService()),
   tenantResolveMiddleware.resolve,
   async (req: Request, res: Response) => {
     try {
-      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-      const { url, events, enabled } = req.body;
+      const context = await requireProjectContext(req, res);
+      if (!context) return;
 
-      // Resolve publicId → internal ID
-      const webhook = await platformRepository.platformWebhook.findUnique({
-        where: { publicId: req.params.webhookId },
-      });
+      const { url, events, enabled } = req.body ?? {};
 
-      if (!webhook || webhook.accountId !== platformTenant!.accountId) {
+      const webhook = await findProjectWebhook(req.params.webhookId, context.project.id);
+      if (!webhook) {
         res.status(404).json({ error: 'NOT_FOUND' });
         return;
       }
 
       await webhookService.updateWebhook(webhook.id, { url, events, enabled });
 
-      await auditService.record(platformTenant!.accountId, 'WEBHOOK_UPDATE', {
-        type: 'webhook',
-        id: req.params.webhookId, // public ID in audit
-      });
+      await auditService.record(
+        context.tenant.accountId,
+        'WEBHOOK_UPDATE',
+        { type: 'webhook', id: req.params.webhookId }, // public ID in audit
+        undefined,
+        { projectId: context.project.id },
+      );
 
       res.json({ success: true });
     } catch {
@@ -211,34 +232,34 @@ router.patch(
 );
 
 /**
- * Delete a webhook (must belong to authenticated account).
- * DELETE /webhooks/:webhookId
+ * Delete a webhook (must belong to the project).
+ * DELETE /accounts/:accountId/projects/:projectPublicId/webhooks/:webhookId
  * :webhookId must be the publicId (wh_xxx).
  */
 router.delete(
-  '/:webhookId',
-  platformAuthMiddleware.authenticate,
+  '/:accountId/projects/:projectPublicId/webhooks/:webhookId',
+  hybridAuth(getSessionService()),
   tenantResolveMiddleware.resolve,
   async (req: Request, res: Response) => {
     try {
-      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
+      const context = await requireProjectContext(req, res);
+      if (!context) return;
 
-      // Resolve publicId → internal ID
-      const webhook = await platformRepository.platformWebhook.findUnique({
-        where: { publicId: req.params.webhookId },
-      });
-
-      if (!webhook || webhook.accountId !== platformTenant!.accountId) {
+      const webhook = await findProjectWebhook(req.params.webhookId, context.project.id);
+      if (!webhook) {
         res.status(404).json({ error: 'NOT_FOUND' });
         return;
       }
 
       await webhookService.deleteWebhook(webhook.id);
 
-      await auditService.record(platformTenant!.accountId, 'WEBHOOK_DELETE', {
-        type: 'webhook',
-        id: req.params.webhookId, // public ID in audit
-      });
+      await auditService.record(
+        context.tenant.accountId,
+        'WEBHOOK_DELETE',
+        { type: 'webhook', id: req.params.webhookId }, // public ID in audit
+        undefined,
+        { projectId: context.project.id },
+      );
 
       res.json({ success: true });
     } catch {
@@ -248,35 +269,35 @@ router.delete(
 );
 
 /**
- * Rotate webhook secret (must belong to authenticated account).
- * POST /webhooks/:webhookId/rotate
+ * Rotate webhook secret (must belong to the project).
+ * POST /accounts/:accountId/projects/:projectPublicId/webhooks/:webhookId/rotate
  * :webhookId must be the publicId (wh_xxx).
  * Plaintext secret is returned ONLY at rotation time.
  */
 router.post(
-  '/:webhookId/rotate',
-  platformAuthMiddleware.authenticate,
+  '/:accountId/projects/:projectPublicId/webhooks/:webhookId/rotate',
+  hybridAuth(getSessionService()),
   tenantResolveMiddleware.resolve,
   async (req: Request, res: Response) => {
     try {
-      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
+      const context = await requireProjectContext(req, res);
+      if (!context) return;
 
-      // Resolve publicId → internal ID
-      const webhook = await platformRepository.platformWebhook.findUnique({
-        where: { publicId: req.params.webhookId },
-      });
-
-      if (!webhook || webhook.accountId !== platformTenant!.accountId) {
+      const webhook = await findProjectWebhook(req.params.webhookId, context.project.id);
+      if (!webhook) {
         res.status(404).json({ error: 'NOT_FOUND' });
         return;
       }
 
       const result = await webhookService.rotateSecret(webhook.id);
 
-      await auditService.record(platformTenant!.accountId, 'WEBHOOK_ROTATE_SECRET', {
-        type: 'webhook',
-        id: req.params.webhookId, // public ID in audit
-      });
+      await auditService.record(
+        context.tenant.accountId,
+        'WEBHOOK_ROTATE_SECRET',
+        { type: 'webhook', id: req.params.webhookId }, // public ID in audit
+        undefined,
+        { projectId: context.project.id },
+      );
 
       // Plaintext secret returned only at rotation — caller must save it
       res.json({ secret: result.secret });

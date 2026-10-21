@@ -16,7 +16,7 @@ const logger = new Logger('ActivityRoute');
  *
  * Recent audit events for the authenticated account, newest first.
  * Optional `since` (createdAt ISO) cursor. Optional `limit` (default
- * 50, max 200). Optional `appPublicId` filter for app-scoped views.
+ * 50, max 200). Optional `projectId` filter for project-scoped views.
  */
 router.get(
   '/history',
@@ -31,27 +31,27 @@ router.get(
 
     const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
     const since = req.query.since ? new Date(String(req.query.since)) : null;
-    const appPublicId = typeof req.query.appPublicId === 'string' ? req.query.appPublicId : null;
+    const projectPublicId = typeof req.query.projectPublicId === 'string' ? req.query.projectPublicId : null;
 
-    let appId: string | null = null;
-    if (appPublicId) {
-      const app = await platformRepository.platformApp.findFirst({
-        where: { publicId: appPublicId, accountId: tenant.accountId },
+    let projectId: string | null = null;
+    if (projectPublicId) {
+      const project = await platformRepository.platformProject.findFirst({
+        where: { publicId: projectPublicId, accountId: tenant.accountId },
         select: { id: true },
       });
-      if (!app) {
-        res.status(404).json({ error: 'APP_NOT_FOUND' });
+      if (!project) {
+        res.status(404).json({ error: 'PROJECT_NOT_FOUND' });
         return;
       }
-      appId = app.id;
+      projectId = project.id;
     }
 
     const where: any = { accountId: tenant.accountId };
     if (since && !isNaN(since.getTime())) {
       where.createdAt = { gt: since };
     }
-    if (appId) {
-      where.metadata = { path: ['appId'], equals: appId };
+    if (projectId) {
+      where.projectId = projectId;
     }
 
     const rows = await platformRepository.platformAuditLog.findMany({
@@ -66,10 +66,10 @@ router.get(
         return {
           id: r.id,
           action: r.action,
+          category: m.category,
           resourceType: r.resource ?? undefined,
           resourceId: r.resourceId ?? undefined,
-          projectId: m.projectId,
-          appId: m.appId,
+          projectId: r.projectId ?? m.projectId,
           instancePublicId: m.instancePublicId,
           message: `${r.action.toLowerCase().replace(/_/g, ' ')}: ${r.resourceId ?? ''}`,
           success: r.success,
@@ -90,7 +90,7 @@ router.get(
  *
  * SSE format:
  *   event: activity
- *   data: { id, action, resourceType, resourceId, projectId, appId, instancePublicId, message, ts }
+ *   data: { id, action, category, resourceType, resourceId, projectId, instancePublicId, message, ts }
  *
  * Heartbeat every 25 s. Falls back to `: redis-unavailable` comment
  * if the broker is unreachable. Clean disconnect on `req.close`.

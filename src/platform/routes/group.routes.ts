@@ -2,38 +2,31 @@ import crypto from 'crypto';
 import { Request, Response, Router } from 'express';
 
 import { evolutionAdapter } from '../adapters/evolution.adapter';
-import { platformAuthMiddleware } from '../middleware/platform-auth.middleware';
+import { hybridAuth } from '../middleware/hybrid-auth.middleware';
 import { tenantResolveMiddleware } from '../middleware/tenant-resolve.middleware';
 import { platformRepository } from '../repository/platform.repository';
 import { AuditService } from '../services/audit.service';
-import { PlatformTenant } from '../types/platform-tenant';
+import { getSessionService } from './auth.routes';
+import { requireProjectContext, requireProjectInstance } from './project-scope';
 
 const router: Router = Router();
 const auditService = new AuditService();
 
 /**
- * List groups for the authenticated tenant.
- * GET /accounts/:accountId/groups
- * accountId in URL must match the authenticated tenant's publicId.
+ * List the groups of a project.
+ * GET /accounts/:accountId/projects/:projectPublicId/groups
  */
 router.get(
-  '/:accountId/groups',
-  platformAuthMiddleware.authenticate,
+  '/:accountId/projects/:projectPublicId/groups',
+  hybridAuth(getSessionService()),
   tenantResolveMiddleware.resolve,
   async (req: Request, res: Response) => {
     try {
-      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-      if (!platformTenant) {
-        res.status(401).json({ error: 'UNAUTHORIZED' });
-        return;
-      }
-      if (platformTenant.publicId !== req.params.accountId) {
-        res.status(403).json({ error: 'FORBIDDEN' });
-        return;
-      }
+      const context = await requireProjectContext(req, res);
+      if (!context) return;
 
       const groups = await platformRepository.platformGroup.findMany({
-        where: { accountId: platformTenant.accountId },
+        where: { projectId: context.project.id },
         select: {
           publicId: true,
           name: true,
@@ -52,36 +45,20 @@ router.get(
 
 /**
  * Sync groups from Evolution engine.
- * POST /accounts/:accountId/instances/:instId/groups/sync
+ * POST /accounts/:accountId/projects/:projectPublicId/instances/:instId/groups/sync
  * instId is the public ID (inst_xxx).
  */
 router.post(
-  '/:accountId/instances/:instId/groups/sync',
-  platformAuthMiddleware.authenticate,
+  '/:accountId/projects/:projectPublicId/instances/:instId/groups/sync',
+  hybridAuth(getSessionService()),
   tenantResolveMiddleware.resolve,
   async (req: Request, res: Response) => {
     try {
-      const platformTenant = (req as Request & { platformTenant?: PlatformTenant }).platformTenant;
-      if (!platformTenant) {
-        res.status(401).json({ error: 'UNAUTHORIZED' });
-        return;
-      }
-      if (platformTenant.publicId !== req.params.accountId) {
-        res.status(403).json({ error: 'FORBIDDEN' });
-        return;
-      }
+      const context = await requireProjectContext(req, res);
+      if (!context) return;
 
-      const instance = await platformRepository.platformInstance.findFirst({
-        where: {
-          publicId: req.params.instId,
-          accountId: platformTenant.accountId,
-        },
-      });
-
-      if (!instance) {
-        res.status(404).json({ error: 'NOT_FOUND', message: 'Instance not found' });
-        return;
-      }
+      const instance = await requireProjectInstance(req, res, context.project.id);
+      if (!instance) return;
 
       // Fetch groups from the Evolution engine (uses internal method with engineJid for upsert matching)
       const engineGroups = await evolutionAdapter.fetchGroupsForSync(instance.id);
@@ -112,8 +89,8 @@ router.post(
           await platformRepository.platformGroup.create({
             data: {
               publicId,
-              accountId: platformTenant.accountId,
-              appId: platformTenant.defaultApp.id,
+              accountId: context.tenant.accountId,
+              projectId: context.project.id,
               instanceId: instance.id,
               name: group.name,
               participantCount: group.participantCount,
@@ -131,10 +108,11 @@ router.post(
       }
 
       await auditService.record(
-        platformTenant.accountId,
+        context.tenant.accountId,
         'GROUPS_SYNC',
         { type: 'group', id: '' },
         { instanceId: req.params.instId, count: syncedCount },
+        { projectId: context.project.id },
       );
 
       res.json({ success: true, syncedCount });

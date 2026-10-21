@@ -16,10 +16,11 @@ export interface ActivityEventPayload {
   id: string;
   kind: 'audit' | 'lifecycle' | 'system';
   action: string;
+  /** The category the event belongs to (api | mcp | auth | message). */
+  category?: string;
   resourceType?: string;
   resourceId?: string;
   projectId?: string;
-  appId?: string;
   instancePublicId?: string;
   message: string;
   metadata?: Record<string, unknown>;

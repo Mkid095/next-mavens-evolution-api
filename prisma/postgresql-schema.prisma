@@ -795,7 +795,6 @@ model PlatformAccount {
   contacts           PlatformContact[]
   groups             PlatformGroup[]
   projects           PlatformProject[]
-  apps               PlatformApp[]
 
   @@index([status])
 }
@@ -868,7 +867,7 @@ model PlatformApiKey {
   id         String    @id @default(cuid())
   publicId   String    @unique @db.VarChar(50)
   accountId  String
-  appId      String
+  projectId      String
   keyHash    String    @unique @db.VarChar(64)
   keyPrefix  String    @db.VarChar(16)
   name       String?   @db.VarChar(255)
@@ -879,11 +878,14 @@ model PlatformApiKey {
   createdAt  DateTime  @default(now()) @db.Timestamp
 
   account   PlatformAccount          @relation(fields: [accountId], references: [id])
-  app       PlatformApp              @relation(fields: [appId], references: [id])
+  project       PlatformProject              @relation(fields: [projectId], references: [id], onDelete: Cascade)
   instances PlatformApiKeyInstance[]
 
+  /// Set when this key is the default token of its project.
+  defaultForProject PlatformProject? @relation("ProjectDefaultToken")
+
   @@index([accountId])
-  @@index([appId])
+  @@index([projectId])
   @@index([keyHash])
 }
 
@@ -924,7 +926,7 @@ model PlatformMessageCommand {
   id             String       @id @default(cuid())
   idempotencyKey String       @db.VarChar(128)
   accountId      String
-  appId          String
+  projectId          String
   instanceId     String
   apiKeyId       String
   messageId      String       @db.VarChar(50)
@@ -940,19 +942,19 @@ model PlatformMessageCommand {
   createdAt      DateTime     @default(now()) @db.Timestamp
   updatedAt      DateTime     @updatedAt
 
-  app PlatformApp @relation(fields: [appId], references: [id])
+  project PlatformProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@unique([accountId, instanceId, idempotencyKey])
   @@index([instanceId, status])
   @@index([accountId, createdAt])
-  @@index([appId])
+  @@index([projectId])
 }
 
 model PlatformWebhook {
   id         String   @id @default(cuid())
   publicId   String   @unique @db.VarChar(50)
   accountId  String
-  appId      String
+  projectId      String
   instanceId String
   url        String   @db.VarChar(500)
   events     Json     @default("[]")
@@ -962,12 +964,12 @@ model PlatformWebhook {
   updatedAt  DateTime @updatedAt
 
   account    PlatformAccount           @relation(fields: [accountId], references: [id])
-  app        PlatformApp               @relation(fields: [appId], references: [id])
+  project        PlatformProject               @relation(fields: [projectId], references: [id], onDelete: Cascade)
   instance   PlatformInstance          @relation(fields: [instanceId], references: [id], onDelete: Cascade)
   deliveries PlatformWebhookDelivery[]
 
   @@index([accountId])
-  @@index([appId])
+  @@index([projectId])
   @@index([instanceId])
   @@index([enabled])
 }
@@ -999,7 +1001,7 @@ model PlatformInstance {
   id              String    @id @default(dbgenerated("gen_random_uuid()"))
   publicId        String    @unique @db.VarChar(50)
   accountId       String    @db.VarChar(255)
-  appId           String    @db.VarChar(255)
+  projectId           String    @db.VarChar(255)
   name            String    @db.VarChar(255)
   status          String    @default("CREATED")
   phoneNumber     String?   @db.VarChar(20)
@@ -1009,7 +1011,7 @@ model PlatformInstance {
   updatedAt       DateTime  @updatedAt
 
   account         PlatformAccount    @relation(fields: [accountId], references: [id])
-  app             PlatformApp        @relation(fields: [appId], references: [id])
+  project             PlatformProject        @relation(fields: [projectId], references: [id], onDelete: Cascade)
   lifecycleEvents InstanceEventLog[]
   contacts        PlatformContact[]
   groups          PlatformGroup[]
@@ -1018,8 +1020,8 @@ model PlatformInstance {
 
   @@unique([accountId, name])
   @@index([accountId])
-  @@index([appId])
-  @@index([accountId, appId])
+  @@index([projectId])
+  @@index([accountId, projectId])
   @@index([status])
 }
 
@@ -1041,7 +1043,7 @@ model PlatformContact {
   id              String    @id @default(dbgenerated("gen_random_uuid()"))
   publicId        String    @unique @db.VarChar(50)
   accountId       String    @db.VarChar(255)
-  appId           String    @db.VarChar(255)
+  projectId           String    @db.VarChar(255)
   instanceId      String    @db.VarChar(255)
   phoneNumber     String    @db.VarChar(20)
   /// The contact's WhatsApp address, e.g. 5511999999999@s.whatsapp.net.
@@ -1055,12 +1057,12 @@ model PlatformContact {
   updatedAt       DateTime  @updatedAt
 
   account  PlatformAccount  @relation(fields: [accountId], references: [id])
-  app      PlatformApp      @relation(fields: [appId], references: [id])
+  project      PlatformProject      @relation(fields: [projectId], references: [id], onDelete: Cascade)
   instance PlatformInstance @relation(fields: [instanceId], references: [id])
 
   @@unique([accountId, phoneNumber])
   @@index([accountId])
-  @@index([appId])
+  @@index([projectId])
   @@index([instanceId])
 }
 
@@ -1068,7 +1070,7 @@ model PlatformGroup {
   id               String   @id @default(dbgenerated("gen_random_uuid()"))
   publicId         String   @unique @db.VarChar(50)
   accountId        String   @db.VarChar(255)
-  appId            String   @db.VarChar(255)
+  projectId            String   @db.VarChar(255)
   instanceId       String   @db.VarChar(255)
   name             String   @db.VarChar(255)
   participantCount Int      @default(0)
@@ -1076,12 +1078,12 @@ model PlatformGroup {
   updatedAt        DateTime @updatedAt
 
   account    PlatformAccount          @relation(fields: [accountId], references: [id])
-  app        PlatformApp              @relation(fields: [appId], references: [id])
+  project        PlatformProject              @relation(fields: [projectId], references: [id], onDelete: Cascade)
   instance   PlatformInstance         @relation(fields: [instanceId], references: [id])
   engineRefs PlatformGroupEngineRef[]
 
   @@index([accountId])
-  @@index([appId])
+  @@index([projectId])
   @@index([instanceId])
 }
 
@@ -1100,7 +1102,7 @@ model PlatformGroupEngineRef {
 model PlatformUsageRecord {
   id             String   @id @default(cuid())
   accountId      String
-  appId          String
+  projectId          String
   instanceId     String?
   operation      String   @db.VarChar(100)
   resource       String   @db.VarChar(50)
@@ -1112,12 +1114,12 @@ model PlatformUsageRecord {
   createdAt      DateTime @default(now()) @db.Timestamp
 
   account PlatformAccount @relation(fields: [accountId], references: [id])
-  app     PlatformApp     @relation(fields: [appId], references: [id])
+  project     PlatformProject     @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([accountId, periodStart])
   @@index([accountId, operation, periodStart])
   @@index([accountId, instanceId])
-  @@index([appId])
+  @@index([projectId])
 }
 
 /// Encrypted application settings.
@@ -1139,9 +1141,18 @@ model PlatformAuditLog {
   accountId  String
   userId     String?
   apiKeyId   String?
+  /// The project the event belongs to. Nullable: some events are not
+  /// project-scoped (an account login, for instance). It is a plain
+  /// column rather than a relation so an audit row survives the
+  /// deletion of the project it referenced.
+  projectId  String?  @db.VarChar(255)
   action     String   @db.VarChar(100)
   resource   String?  @db.VarChar(100)
-  resourceId String?  @db.VarChar(50)
+  /// The affected resource. An API path is stored here for API_REQUEST
+  /// events, and a path is longer than the 50 characters this column used
+  /// to allow — which silently dropped every project-scoped request from
+  /// the audit trail.
+  resourceId String?  @db.VarChar(255)
   requestId  String?  @db.VarChar(50)
   eventId    String?  @db.VarChar(50)
   ipAddress  String?  @db.VarChar(45)
@@ -1154,6 +1165,7 @@ model PlatformAuditLog {
 
   @@index([accountId, createdAt])
   @@index([accountId, action])
+  @@index([projectId, createdAt])
   @@index([requestId])
 }
 
@@ -1178,7 +1190,22 @@ model PlatformProject {
   updatedAt   DateTime              @updatedAt
 
   account PlatformAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  apps    PlatformApp[]
+  defaultApiKey PlatformApiKey?   @relation("ProjectDefaultToken", fields: [defaultApiKeyId], references: [id], onDelete: SetNull)
+  instances      PlatformInstance[]
+  apiKeys        PlatformApiKey[]
+  webhooks       PlatformWebhook[]
+  contacts       PlatformContact[]
+  groups         PlatformGroup[]
+  messageCmds    PlatformMessageCommand[]
+  usageRecords   PlatformUsageRecord[]
+
+  /// The project's default API token, stored encrypted (AES-256-GCM) so the
+  /// MCP and CLI install pages can show a working configuration at any time.
+  /// `defaultApiKeyId` points at the PlatformApiKey row that enforces it.
+  defaultApiKeyId       String?   @unique @db.VarChar(255)
+  defaultTokenEncrypted String?   @db.Text
+  defaultTokenPrefix    String?   @db.VarChar(20)
+  defaultTokenCreatedAt DateTime? @db.Timestamp
 
   @@unique([accountId, slug])
   @@index([accountId])
@@ -1188,32 +1215,4 @@ model PlatformProject {
 enum PlatformAppStatus {
   ACTIVE
   ARCHIVED
-}
-
-model PlatformApp {
-  id          String            @id @default(cuid())
-  publicId    String            @unique @db.VarChar(50)
-  accountId   String            @db.VarChar(255)
-  projectId   String            @db.VarChar(255)
-  name        String            @db.VarChar(100)
-  slug        String            @db.VarChar(60)
-  description String?           @db.VarChar(500)
-  status      PlatformAppStatus @default(ACTIVE)
-  createdAt   DateTime          @default(now()) @db.Timestamp
-  updatedAt   DateTime          @updatedAt
-
-  account      PlatformAccount          @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  project      PlatformProject          @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  instances    PlatformInstance[]
-  apiKeys      PlatformApiKey[]
-  webhooks     PlatformWebhook[]
-  contacts     PlatformContact[]
-  groups       PlatformGroup[]
-  messageCmds  PlatformMessageCommand[]
-  usageRecords PlatformUsageRecord[]
-
-  @@unique([projectId, slug])
-  @@index([accountId])
-  @@index([projectId])
-  @@index([accountId, status])
 }

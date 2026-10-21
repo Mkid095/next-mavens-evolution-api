@@ -138,6 +138,27 @@ export class CliContext {
       throw toCliError(error, this.config.apiUrl);
     }
   }
+
+  /**
+   * The project public id (proj_…) the credential is scoped to.
+   *
+   * An API key belongs to a project, so everything it does happens
+   * inside that project. `/me` reports which one.
+   */
+  public async projectId(): Promise<string> {
+    const client = this.client();
+    try {
+      const me = await client.me();
+      if (!me.projectId) {
+        throw new CliError('This API key is not scoped to a project.', [
+          'Run `viventure login` with a key that belongs to a project.',
+        ]);
+      }
+      return me.projectId;
+    } catch (error) {
+      throw toCliError(error, this.config.apiUrl);
+    }
+  }
 }
 
 /** Convert any thrown value into a user-facing CliError. */

@@ -21,7 +21,9 @@ export function registerWebhooksCommand(program: Command): void {
       const ctx = new CliContext(globalOptions(command));
       try {
         const client = ctx.client();
-        const hooks = await client.get<WebhookDto[]>('/webhooks');
+        const accountId = await ctx.accountId();
+        const projectId = await ctx.projectId();
+        const hooks = await client.get<WebhookDto[]>(`/accounts/${accountId}/projects/${projectId}/webhooks`);
 
         ctx.printer.result(hooks, () => {
           if (!hooks.length) {

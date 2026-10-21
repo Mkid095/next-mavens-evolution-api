@@ -76,7 +76,7 @@ router.post(
         data: {
           idempotencyKey: idempotencyKey ?? `inline_${messageId}`,
           accountId: platformTenant.accountId,
-          appId: platformTenant.defaultApp.id,
+          projectId: platformInstance.projectId,
           instanceId: platformInstance.id,
           apiKeyId: (req as Request & { platformKey?: { apiKeyId: string } }).platformKey?.apiKeyId ?? '',
           messageId,
@@ -88,10 +88,16 @@ router.post(
         },
       });
 
-      await auditService.record(platformTenant.accountId, 'MESSAGE_SEND', {
-        type: 'message',
-        id: messageId,
-      });
+      await auditService.record(
+        platformTenant.accountId,
+        'MESSAGE_SEND',
+        {
+          type: 'message',
+          id: messageId,
+        },
+        { instancePublicId: platformInstance.publicId },
+        { projectId: platformInstance.projectId },
+      );
 
       idempotencyMiddleware.complete(req, res, { messageId }, messageId);
 

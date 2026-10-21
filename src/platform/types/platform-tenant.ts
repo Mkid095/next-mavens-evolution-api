@@ -9,19 +9,12 @@
  */
 
 /**
- * The app a request is scoped to.
- *
- * `id` is the internal cuid — this is what the `appId` foreign key
- * column stores. `publicId` is the `app_xxx` external identifier.
- */
-export interface PlatformTenantApp {
-  id: string;
-  publicId: string;
-  projectId: string;
-}
-
-/**
  * The resolved tenant for a request, built by `tenantResolveMiddleware`.
+ *
+ * The tenant carries the ACCOUNT and the PLAN. It no longer carries an
+ * app: the hierarchy is Account → Project → Instance, and the project a
+ * request works on is named explicitly in the route
+ * (`/accounts/:accountId/projects/:projectPublicId/...`).
  */
 export interface PlatformTenant {
   /** Internal PlatformAccount id (cuid). */
@@ -34,10 +27,4 @@ export interface PlatformTenant {
     name: string;
     monthlyMessageLimit: number | null;
   };
-  /**
-   * The app this request is scoped to — resolved from the `X-App-Id`
-   * header, the `appPublicId` query/body field, or the account's
-   * default app, in that order.
-   */
-  defaultApp: PlatformTenantApp;
 }

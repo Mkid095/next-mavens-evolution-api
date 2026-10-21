@@ -46,31 +46,26 @@ export class ProjectService {
     return platformRepository.platformProject.findMany({
       where: { accountId },
       orderBy: { createdAt: 'desc' },
-      include: {
-        apps: { select: { id: true, publicId: true, name: true, slug: true, status: true } },
-      },
     });
   }
 
   async get(accountId: string, projectPublicId: string) {
     return platformRepository.platformProject.findFirst({
       where: { publicId: projectPublicId, accountId },
-      include: {
-        apps: { select: { id: true, publicId: true, name: true, slug: true, status: true } },
-      },
     });
   }
 
   /**
    * Resolve the default project for an account (slug = 'default').
-   * Created on-demand if missing — used by the tenant-resolve
-   * middleware as a back-compat fallback.
+   * Created on-demand if missing — used as the fallback project for
+   * callers that authenticate with a dashboard session instead of a
+   * project-scoped API key.
    *
    * NOTE: the row is written directly (NOT through `create()`) because
    * `create()` derives the slug from the name via `slugify()`, which
    * would produce `default-project` instead of the literal `default`
-   * slug this lookup expects — causing a new project+app pair to be
-   * created on every call.
+   * slug this lookup expects — causing a new project to be created
+   * on every call.
    */
   async resolveDefault(accountId: string) {
     const existing = await platformRepository.platformProject.findFirst({
@@ -141,12 +136,8 @@ export class ProjectService {
   async archive(accountId: string, projectPublicId: string) {
     const project = await this.get(accountId, projectPublicId);
     if (!project) return null;
-    // Soft-delete: apps inside are also archived so they stop appearing
-    // in the dashboard's default-app lookup.
-    await platformRepository.platformApp.updateMany({
-      where: { projectId: project.id, status: { not: 'ARCHIVED' } },
-      data: { status: 'ARCHIVED' },
-    });
+    // Soft-delete. The instances, keys and webhooks that hang off the
+    // project are cascade-deleted with the project row itself.
     return platformRepository.platformProject.update({
       where: { id: project.id },
       data: { status: 'ARCHIVED' },

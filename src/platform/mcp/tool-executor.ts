@@ -7,6 +7,8 @@ import { AuditService } from '../services/audit.service';
 import { docsService } from '../services/docs.service';
 import { InstanceService } from '../services/instance.service';
 import { PlatformAuthService } from '../services/platform-auth.service';
+import { ProjectScope } from '../services/project-scope.service';
+import { resolveRequestProject } from '../services/request-project';
 import { SubscriptionService } from '../services/subscription.service';
 import { UsageService } from '../services/usage.service';
 import { WebhookService } from '../services/webhook.service';
@@ -97,9 +99,16 @@ function fail(code: number, message: string, data?: unknown): ToolOutcome {
   return { ok: false, error: { code, message, data } };
 }
 
-async function resolveInstance(instanceId: string, accountId: string) {
+/**
+ * Find an instance by its public id, scoped to a project.
+ *
+ * The API key that authenticated the call names the project, so an
+ * agent can only ever reach the instances of the project it holds a
+ * key for.
+ */
+async function resolveInstance(instanceId: string, projectId: string) {
   return platformRepository.platformInstance.findFirst({
-    where: { publicId: instanceId, accountId },
+    where: { publicId: instanceId, projectId },
   });
 }
 
@@ -189,6 +198,18 @@ export async function executeTool(
   const tenant = ctx.tenant;
   const req = ctx.req;
 
+  // The project the call is scoped to. An API key names its own
+  // project; a dashboard session falls back to the account's default
+  // project. Resolved lazily — the account-level tools (plans, usage,
+  // documentation) do not need it.
+  let projectPromise: Promise<ProjectScope | null> | null = null;
+  const getProject = (): Promise<ProjectScope | null> => {
+    if (!projectPromise) {
+      projectPromise = resolveRequestProject(req, tenant.accountId);
+    }
+    return projectPromise;
+  };
+
   try {
     switch (tool) {
       // ══════════════════════════════════════════════════════
@@ -196,8 +217,10 @@ export async function executeTool(
       // ══════════════════════════════════════════════════════
 
       case 'list_instances': {
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
         const instances = await platformRepository.platformInstance.findMany({
-          where: { accountId: tenant.accountId },
+          where: { projectId: project.id },
           select: {
             publicId: true,
             name: true,
@@ -229,7 +252,9 @@ export async function executeTool(
       case 'get_instance': {
         const { instanceId } = params as { instanceId?: string };
         if (!instanceId) return fail(JSONRPC_INVALID_PARAMS, 'instanceId is required');
-        const instance = await resolveInstance(instanceId, tenant.accountId);
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
+        const instance = await resolveInstance(instanceId, project.id);
         if (!instance) return fail(-32004, 'Instance not found', { instanceId });
         return {
           ok: true,
@@ -248,7 +273,9 @@ export async function executeTool(
       case 'instance_status': {
         const { instanceId } = params as { instanceId?: string };
         if (!instanceId) return fail(JSONRPC_INVALID_PARAMS, 'instanceId is required');
-        const instance = await resolveInstance(instanceId, tenant.accountId);
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
+        const instance = await resolveInstance(instanceId, project.id);
         if (!instance) return fail(-32004, 'Instance not found', { instanceId });
         return {
           ok: true,
@@ -262,8 +289,10 @@ export async function executeTool(
       }
 
       case 'list_instances_summary': {
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
         const instances = await platformRepository.platformInstance.findMany({
-          where: { accountId: tenant.accountId },
+          where: { projectId: project.id },
           select: { status: true },
         });
         const summary = {
@@ -284,12 +313,20 @@ export async function executeTool(
       case 'create_instance': {
         const { name } = params as { name?: string };
         if (!name) return fail(JSONRPC_INVALID_PARAMS, 'name is required');
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
         const existing = await platformRepository.platformInstance.findFirst({
           where: { accountId: tenant.accountId, name },
         });
         if (existing) return fail(-32002, 'Instance with this name already exists', { name });
-        const domain = await instanceService.create(tenant.accountId, name, tenant.defaultApp.id);
-        await auditService.record(tenant.accountId, 'INSTANCE_CREATED', { type: 'instance', id: domain.publicId });
+        const domain = await instanceService.create(tenant.accountId, project.id, name);
+        await auditService.record(
+          tenant.accountId,
+          'INSTANCE_CREATED',
+          { type: 'instance', id: domain.publicId },
+          { instancePublicId: domain.publicId },
+          { projectId: project.id },
+        );
         return {
           ok: true,
           data: {
@@ -304,23 +341,39 @@ export async function executeTool(
       case 'delete_instance': {
         const { instanceId } = params as { instanceId?: string };
         if (!instanceId) return fail(JSONRPC_INVALID_PARAMS, 'instanceId is required');
-        const instance = await resolveInstance(instanceId, tenant.accountId);
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
+        const instance = await resolveInstance(instanceId, project.id);
         if (!instance) return { ok: true, data: { deleted: false, reason: 'not_found' } }; // Idempotent
         await instanceService.delete(instance.id, tenant.accountId);
-        await auditService.record(tenant.accountId, 'INSTANCE_DELETED', { type: 'instance', id: instanceId });
+        await auditService.record(
+          tenant.accountId,
+          'INSTANCE_DELETED',
+          { type: 'instance', id: instanceId },
+          { instancePublicId: instance.publicId },
+          { projectId: project.id },
+        );
         return { ok: true, data: { deleted: true } };
       }
 
       case 'whatsapp_connect': {
         const { instanceId } = params as { instanceId?: string };
         if (!instanceId) return fail(JSONRPC_INVALID_PARAMS, 'instanceId is required');
-        const instance = await resolveInstance(instanceId, tenant.accountId);
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
+        const instance = await resolveInstance(instanceId, project.id);
         if (!instance) return fail(-32004, 'Instance not found', { instanceId });
         if (instance.status === 'CONNECTED') {
           return { ok: true, data: { status: 'CONNECTED', message: 'Instance already connected' } };
         }
         await instanceService.connect(instance.id);
-        await auditService.record(tenant.accountId, 'INSTANCE_CONNECT_INITIATED', { type: 'instance', id: instanceId });
+        await auditService.record(
+          tenant.accountId,
+          'INSTANCE_CONNECT_INITIATED',
+          { type: 'instance', id: instanceId },
+          { instancePublicId: instance.publicId },
+          { projectId: project.id },
+        );
         return {
           ok: true,
           data: {
@@ -334,20 +387,36 @@ export async function executeTool(
       case 'whatsapp_disconnect': {
         const { instanceId } = params as { instanceId?: string };
         if (!instanceId) return fail(JSONRPC_INVALID_PARAMS, 'instanceId is required');
-        const instance = await resolveInstance(instanceId, tenant.accountId);
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
+        const instance = await resolveInstance(instanceId, project.id);
         if (!instance) return fail(-32004, 'Instance not found', { instanceId });
         await instanceService.disconnect(instance.id);
-        await auditService.record(tenant.accountId, 'INSTANCE_DISCONNECTED', { type: 'instance', id: instanceId });
+        await auditService.record(
+          tenant.accountId,
+          'INSTANCE_DISCONNECTED',
+          { type: 'instance', id: instanceId },
+          { instancePublicId: instance.publicId },
+          { projectId: project.id },
+        );
         return { ok: true, data: { status: 'DISCONNECTED', instanceId } };
       }
 
       case 'whatsapp_restart': {
         const { instanceId } = params as { instanceId?: string };
         if (!instanceId) return fail(JSONRPC_INVALID_PARAMS, 'instanceId is required');
-        const instance = await resolveInstance(instanceId, tenant.accountId);
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
+        const instance = await resolveInstance(instanceId, project.id);
         if (!instance) return fail(-32004, 'Instance not found', { instanceId });
         await instanceService.restart(instance.id);
-        await auditService.record(tenant.accountId, 'INSTANCE_RESTARTED', { type: 'instance', id: instanceId });
+        await auditService.record(
+          tenant.accountId,
+          'INSTANCE_RESTARTED',
+          { type: 'instance', id: instanceId },
+          { instancePublicId: instance.publicId },
+          { projectId: project.id },
+        );
         return { ok: true, data: { status: 'CONNECTING', instanceId, message: 'Restart initiated' } };
       }
 
@@ -364,7 +433,9 @@ export async function executeTool(
         if (!instanceId || !recipient || !text) {
           return fail(JSONRPC_INVALID_PARAMS, 'instanceId, recipient, and text are required');
         }
-        const instance = await resolveInstance(instanceId, tenant.accountId);
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
+        const instance = await resolveInstance(instanceId, project.id);
         if (!instance) return fail(-32004, 'Instance not found', { instanceId });
         if (instance.status !== 'CONNECTED') {
           return fail(-32009, 'Instance not connected', { instanceId, status: instance.status });
@@ -379,7 +450,13 @@ export async function executeTool(
           type: 'text',
         });
 
-        await auditService.record(tenant.accountId, 'MESSAGE_SENT', { type: 'message', id: messageId });
+        await auditService.record(
+          tenant.accountId,
+          'MESSAGE_SENT',
+          { type: 'message', id: messageId },
+          { instancePublicId: instance.publicId },
+          { projectId: project.id },
+        );
         return { ok: true, data: { messageId, status: 'queued' } };
       }
 
@@ -394,7 +471,9 @@ export async function executeTool(
         if (!instanceId || !recipient || !type || !url) {
           return fail(JSONRPC_INVALID_PARAMS, 'instanceId, recipient, type, and url are required');
         }
-        const instance = await resolveInstance(instanceId, tenant.accountId);
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
+        const instance = await resolveInstance(instanceId, project.id);
         if (!instance) return fail(-32004, 'Instance not found', { instanceId });
         if (instance.status !== 'CONNECTED') {
           return fail(-32009, 'Instance not connected', { instanceId, status: instance.status });
@@ -411,7 +490,13 @@ export async function executeTool(
           type,
         });
 
-        await auditService.record(tenant.accountId, 'MESSAGE_SENT', { type: 'message', id: messageId });
+        await auditService.record(
+          tenant.accountId,
+          'MESSAGE_SENT',
+          { type: 'message', id: messageId },
+          { instancePublicId: instance.publicId },
+          { projectId: project.id },
+        );
         return {
           ok: true,
           data: {
@@ -429,8 +514,10 @@ export async function executeTool(
       // ══════════════════════════════════════════════════════
 
       case 'list_webhooks': {
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
         const ws = getWebhookService();
-        const webhooks = await ws.listWebhooks(tenant.accountId);
+        const webhooks = await ws.listWebhooks(project.id);
         const instanceIds = [...new Set(webhooks.map((w: any) => w.instanceId))];
         const instances = await platformRepository.platformInstance.findMany({
           where: { id: { in: instanceIds } },
@@ -456,8 +543,10 @@ export async function executeTool(
       case 'get_webhook': {
         const { webhookId } = params as { webhookId?: string };
         if (!webhookId) return fail(JSONRPC_INVALID_PARAMS, 'webhookId is required');
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
         const webhook = await platformRepository.platformWebhook.findFirst({
-          where: { publicId: webhookId, accountId: tenant.accountId },
+          where: { publicId: webhookId, projectId: project.id },
         });
         if (!webhook) return fail(-32004, 'Webhook not found', { webhookId });
         return {
@@ -481,11 +570,19 @@ export async function executeTool(
         if (!Array.isArray(events) || events.length === 0) {
           return fail(JSONRPC_INVALID_PARAMS, 'events must be a non-empty array');
         }
-        const instance = await resolveInstance(instanceId, tenant.accountId);
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
+        const instance = await resolveInstance(instanceId, project.id);
         if (!instance) return fail(-32004, 'Instance not found', { instanceId });
         const ws = getWebhookService();
-        const result = await ws.createWebhook(tenant.accountId, instance.id, url, events, tenant.defaultApp.id);
-        await auditService.record(tenant.accountId, 'WEBHOOK_CREATED', { type: 'webhook', id: result.publicId });
+        const result = await ws.createWebhook(tenant.accountId, project.id, instance.id, url, events);
+        await auditService.record(
+          tenant.accountId,
+          'WEBHOOK_CREATED',
+          { type: 'webhook', id: result.publicId },
+          undefined,
+          { projectId: project.id },
+        );
         return {
           ok: true,
           data: {
@@ -506,8 +603,10 @@ export async function executeTool(
           enabled?: boolean;
         };
         if (!webhookId) return fail(JSONRPC_INVALID_PARAMS, 'webhookId is required');
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
         const webhook = await platformRepository.platformWebhook.findFirst({
-          where: { publicId: webhookId, accountId: tenant.accountId },
+          where: { publicId: webhookId, projectId: project.id },
         });
         if (!webhook) return fail(-32004, 'Webhook not found', { webhookId });
         const updateData: { url?: string; events?: string[]; enabled?: boolean } = {};
@@ -523,8 +622,10 @@ export async function executeTool(
       case 'delete_webhook': {
         const { webhookId } = params as { webhookId?: string };
         if (!webhookId) return fail(JSONRPC_INVALID_PARAMS, 'webhookId is required');
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
         const webhook = await platformRepository.platformWebhook.findFirst({
-          where: { publicId: webhookId, accountId: tenant.accountId },
+          where: { publicId: webhookId, projectId: project.id },
         });
         if (!webhook) return { ok: true, data: { deleted: false, reason: 'not_found' } }; // Idempotent
         const ws = getWebhookService();
@@ -536,8 +637,10 @@ export async function executeTool(
       case 'test_webhook': {
         const { webhookId } = params as { webhookId?: string };
         if (!webhookId) return fail(JSONRPC_INVALID_PARAMS, 'webhookId is required');
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
         const webhook = await platformRepository.platformWebhook.findFirst({
-          where: { publicId: webhookId, accountId: tenant.accountId },
+          where: { publicId: webhookId, projectId: project.id },
         });
         if (!webhook) return fail(-32004, 'Webhook not found', { webhookId });
         const ws = getWebhookService();
@@ -569,8 +672,10 @@ export async function executeTool(
       case 'rotate_webhook_secret': {
         const { webhookId } = params as { webhookId?: string };
         if (!webhookId) return fail(JSONRPC_INVALID_PARAMS, 'webhookId is required');
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
         const webhook = await platformRepository.platformWebhook.findFirst({
-          where: { publicId: webhookId, accountId: tenant.accountId },
+          where: { publicId: webhookId, projectId: project.id },
         });
         if (!webhook) return fail(-32004, 'Webhook not found', { webhookId });
         const ws = getWebhookService();
@@ -584,8 +689,10 @@ export async function executeTool(
       // ══════════════════════════════════════════════════════
 
       case 'list_api_keys': {
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
         const as = getAuthService();
-        const keys = await as.listApiKeys(tenant.accountId);
+        const keys = await as.listApiKeys(tenant.accountId, project.id);
         return {
           ok: true,
           data: {
@@ -605,15 +712,19 @@ export async function executeTool(
       case 'create_api_key': {
         const { name, scopes, expiresAt } = params as { name?: string; scopes?: string[]; expiresAt?: string };
         if (!name) return fail(JSONRPC_INVALID_PARAMS, 'name is required');
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
         const as = getAuthService();
         const { plaintextKey, publicId } = await as.createApiKey(
           tenant.accountId,
+          project.id,
           name,
           scopes ?? ['*'],
           expiresAt ? new Date(expiresAt) : undefined,
-          tenant.defaultApp.id,
         );
-        await auditService.record(tenant.accountId, 'API_KEY_CREATED', { type: 'api_key', id: publicId });
+        await auditService.record(tenant.accountId, 'API_KEY_CREATED', { type: 'api_key', id: publicId }, undefined, {
+          projectId: project.id,
+        });
         return {
           ok: true,
           data: {
@@ -630,21 +741,33 @@ export async function executeTool(
       case 'revoke_api_key': {
         const { keyId } = params as { keyId?: string };
         if (!keyId) return fail(JSONRPC_INVALID_PARAMS, 'keyId is required');
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
         const as = getAuthService();
-        const revoked = await as.revokeApiKey(keyId);
+        const revoked = await as.revokeApiKey(keyId, tenant.accountId, project.id);
         if (!revoked) return fail(-32004, 'API key not found', { keyId });
-        await auditService.record(tenant.accountId, 'API_KEY_REVOKED', { type: 'api_key', id: keyId });
+        await auditService.record(tenant.accountId, 'API_KEY_REVOKED', { type: 'api_key', id: keyId }, undefined, {
+          projectId: project.id,
+        });
         return { ok: true, data: { revoked: true, keyId } };
       }
 
       case 'bind_api_key_instance': {
         const { keyId, instanceId } = params as { keyId?: string; instanceId?: string };
         if (!keyId || !instanceId) return fail(JSONRPC_INVALID_PARAMS, 'keyId and instanceId are required');
-        const instance = await resolveInstance(instanceId, tenant.accountId);
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
+        const instance = await resolveInstance(instanceId, project.id);
         if (!instance) return fail(-32004, 'Instance not found', { instanceId });
         const as = getAuthService();
         await as.bindInstance(keyId, instance.id);
-        await auditService.record(tenant.accountId, 'API_KEY_INSTANCE_BINDING', { type: 'api_key', id: keyId });
+        await auditService.record(
+          tenant.accountId,
+          'API_KEY_INSTANCE_BINDING',
+          { type: 'api_key', id: keyId },
+          undefined,
+          { projectId: project.id },
+        );
         return { ok: true, data: { bound: true, keyId, instanceId } };
       }
 
@@ -732,7 +855,9 @@ export async function executeTool(
       case 'get_instance_logs': {
         const { instanceId, limit } = params as { instanceId?: string; limit?: number };
         if (!instanceId) return fail(JSONRPC_INVALID_PARAMS, 'instanceId is required');
-        const instance = await resolveInstance(instanceId, tenant.accountId);
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
+        const instance = await resolveInstance(instanceId, project.id);
         if (!instance) return fail(-32004, 'Instance not found', { instanceId });
         const logs = await platformRepository.instanceEventLog.findMany({
           where: { instanceId: instance.id },
@@ -761,7 +886,9 @@ export async function executeTool(
       case 'list_contacts': {
         const { instanceId } = params as { instanceId?: string };
         if (!instanceId) return fail(JSONRPC_INVALID_PARAMS, 'instanceId is required');
-        const instance = await resolveInstance(instanceId, tenant.accountId);
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
+        const instance = await resolveInstance(instanceId, project.id);
         if (!instance) return fail(-32004, 'Instance not found', { instanceId });
         if (instance.status !== 'CONNECTED') {
           return fail(-32009, 'Instance not connected', { instanceId, status: instance.status });
@@ -773,7 +900,9 @@ export async function executeTool(
       case 'list_groups': {
         const { instanceId } = params as { instanceId?: string };
         if (!instanceId) return fail(JSONRPC_INVALID_PARAMS, 'instanceId is required');
-        const instance = await resolveInstance(instanceId, tenant.accountId);
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
+        const instance = await resolveInstance(instanceId, project.id);
         if (!instance) return fail(-32004, 'Instance not found', { instanceId });
         if (instance.status !== 'CONNECTED') {
           return fail(-32009, 'Instance not connected', { instanceId, status: instance.status });

@@ -57,10 +57,10 @@ export class InstanceService {
    *
    * If the Evolution row already exists (very rare), we reuse it.
    *
-   * `appId` is the internal PlatformApp id (cuid) the instance is
-   * scoped to — the `appId` column is NOT NULL in the database.
+   * `projectId` is the internal PlatformProject id (cuid) the instance
+   * is scoped to — the `projectId` column is NOT NULL in the database.
    */
-  async create(accountId: string, name: string, appId: string): Promise<PlatformInstanceDomain> {
+  async create(accountId: string, projectId: string, name: string): Promise<PlatformInstanceDomain> {
     const publicId = `inst_${crypto.randomBytes(8).toString('hex')}`;
 
     // 1) Pre-create the Evolution Instance row (in the engine's DB)
@@ -98,7 +98,7 @@ export class InstanceService {
       data: {
         publicId,
         accountId,
-        appId,
+        projectId,
         name,
         status: 'CREATED',
         capabilities: [],
@@ -106,7 +106,7 @@ export class InstanceService {
     });
 
     this.logger.log(
-      `Created PlatformInstance ${publicId} (Evolution id=${evolutionInstance.id}) for account ${accountId} app ${appId}`,
+      `Created PlatformInstance ${publicId} (Evolution id=${evolutionInstance.id}) for account ${accountId} project ${projectId}`,
     );
     return instance;
   }
@@ -166,10 +166,11 @@ export class InstanceService {
    * Retrieve a single PlatformInstance by ID.
    *
    * Enforces tenant isolation — only returns the instance if the supplied
-   * accountId matches the record's accountId.
+   * accountId matches the record's accountId. When `projectId` is given the
+   * instance must belong to that project as well.
    * Returns null if not found or if the caller does not own the instance.
    */
-  async get(instanceId: string, accountId: string): Promise<PlatformInstanceDomain | null> {
+  async get(instanceId: string, accountId: string, projectId?: string): Promise<PlatformInstanceDomain | null> {
     const instance = await platformRepository.platformInstance.findUnique({
       where: { id: instanceId },
     });
@@ -178,15 +179,19 @@ export class InstanceService {
       return null;
     }
 
+    if (projectId && instance.projectId !== projectId) {
+      return null;
+    }
+
     return instance;
   }
 
   /**
-   * List all PlatformInstances for a given account.
+   * List the PlatformInstances of a project.
    */
-  async list(accountId: string): Promise<PlatformInstanceDomain[]> {
+  async list(projectId: string): Promise<PlatformInstanceDomain[]> {
     return platformRepository.platformInstance.findMany({
-      where: { accountId },
+      where: { projectId },
       orderBy: { createdAt: 'desc' },
     });
   }

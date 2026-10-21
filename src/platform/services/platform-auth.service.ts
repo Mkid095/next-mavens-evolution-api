@@ -7,28 +7,28 @@ export class PlatformAuthService {
   private readonly logger = new Logger('PlatformAuthService');
 
   /**
-   * Create an API key for an account.
+   * Create an API key for a project.
    *
-   * `appId` is the internal PlatformApp id (cuid) the key is scoped to —
-   * the `appId` column is NOT NULL in the database.
+   * `projectId` is the internal PlatformProject id (cuid) the key is
+   * scoped to — the `projectId` column is NOT NULL in the database.
    */
   public async createApiKey(
     accountId: string,
+    projectId: string,
     name: string,
     scopes: string[],
     expiresAt: Date | undefined,
-    appId: string,
-  ): Promise<{ publicId: string; plaintextKey: string }> {
+  ): Promise<{ id: string; publicId: string; plaintextKey: string; keyPrefix: string }> {
     const publicId = `key_${crypto.randomBytes(12).toString('hex')}`;
     const plaintextKey = `fidscript_sk_${crypto.randomBytes(32).toString('hex')}`;
     const keyHash = this.hashKey(plaintextKey);
     const keyPrefix = plaintextKey.substring(0, 16);
 
-    await platformRepository.platformApiKey.create({
+    const created = await platformRepository.platformApiKey.create({
       data: {
         publicId,
         accountId,
-        appId,
+        projectId,
         name,
         keyHash,
         keyPrefix,
@@ -36,21 +36,24 @@ export class PlatformAuthService {
         expiresAt,
         createdAt: new Date(),
       },
+      select: { id: true },
     });
 
-    this.logger.info(`API key created: ${publicId} for account ${accountId}`);
-    return { publicId, plaintextKey };
+    this.logger.info(`API key created: ${publicId} for account ${accountId} project ${projectId}`);
+    return { id: created.id, publicId, plaintextKey, keyPrefix };
   }
 
   /**
    * Validate a plaintext API key.
-   * Returns the key record's internal id, publicId, accountId, scopes, and expiry.
+   * Returns the key record's internal id, publicId, accountId, projectId,
+   * scopes, and expiry.
    * Returns null if the key is invalid, revoked, or expired.
    */
   public async validateApiKey(plaintextKey: string): Promise<{
     id: string;
     publicId: string;
     accountId: string;
+    projectId: string;
     scopes: string[];
     expiresAt: Date | null;
   } | null> {
@@ -73,6 +76,7 @@ export class PlatformAuthService {
       id: record.id,
       publicId: record.publicId,
       accountId: record.accountId,
+      projectId: record.projectId,
       scopes: record.scopes as string[],
       expiresAt: record.expiresAt,
     };
@@ -86,19 +90,19 @@ export class PlatformAuthService {
     await this.revokeApiKey(id);
     const { plaintextKey } = await this.createApiKey(
       existing.accountId,
+      existing.projectId,
       `${existing.name} (rotated)`,
       existing.scopes as string[],
       existing.expiresAt ?? undefined,
-      existing.appId,
     );
     return { plaintextKey };
   }
 
-  public async revokeApiKey(publicId: string, accountId?: string): Promise<boolean> {
+  public async revokeApiKey(publicId: string, accountId?: string, projectId?: string): Promise<boolean> {
     // publicId is the key_xxx id; the platformApiKey.id is the internal CUID.
     // We look up by publicId to keep the URL stable.
     const existing = await platformRepository.platformApiKey.findFirst({
-      where: { publicId, ...(accountId ? { accountId } : {}) },
+      where: { publicId, ...(accountId ? { accountId } : {}), ...(projectId ? { projectId } : {}) },
       select: { id: true, revokedAt: true },
     });
     if (!existing || existing.revokedAt) {
@@ -122,12 +126,17 @@ export class PlatformAuthService {
     });
   }
 
-  public async listApiKeys(accountId: string) {
+  /**
+   * List the API keys of an account. When `projectId` is supplied only
+   * that project's keys are returned.
+   */
+  public async listApiKeys(accountId: string, projectId?: string) {
     const keys = await platformRepository.platformApiKey.findMany({
-      where: { accountId },
+      where: { accountId, ...(projectId ? { projectId } : {}) },
       select: {
         id: true,
         publicId: true,
+        projectId: true,
         name: true,
         keyPrefix: true,
         scopes: true,

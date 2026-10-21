@@ -1,31 +1,32 @@
 import { Logger } from '@config/logger.config';
 import { NextFunction, Request, Response } from 'express';
 
-import { appService } from '../services/app.service';
 import { TenantService } from '../services/tenant.service';
-import { PlatformTenant, PlatformTenantApp } from '../types/platform-tenant';
+import { PlatformTenant } from '../types/platform-tenant';
 
 /**
  * Express request with the platform context attached by the auth and
  * tenant middlewares.
  *
- * `__vvResolvedApp` memoises the resolved app for the lifetime of the
- * request: `platform.router.ts` mounts the middleware chain on `/accounts`
- * AND the individual route files re-declare `platformAuth` +
- * `tenantResolve` on their own routes, so `resolve` runs TWICE for some
- * paths (`/webhooks`, `/accounts/:id/contacts`, `/accounts/:id/groups`,
- * `/accounts/:id/users`, `/accounts/:id/api-keys`). Without the memo the
- * DB would be hit twice per request.
+ * `__vvResolvedTenant` memoises the resolved tenant for the lifetime of
+ * the request: `platform.router.ts` mounts the middleware chain on
+ * `/accounts` once per route group, so `resolve` runs several times for
+ * a single request. Without the memo the account would be loaded from
+ * the database once per mount.
  */
-type RequestWithApp = Request & {
-  __vvResolvedApp?: PlatformTenantApp;
+type RequestWithTenant = Request & {
   platformTenant?: PlatformTenant;
+  __vvResolvedTenant?: PlatformTenant;
 };
 
 /**
  * Tenant Resolve Middleware
  * Loads PlatformAccount from platformKey.accountId (internal CUID) on request.
  * Must be used AFTER platformAuth middleware.
+ *
+ * The tenant carries the account and the plan. It no longer resolves an
+ * app: the `X-App-Id` header is gone and the project a request works on
+ * is named explicitly in the route.
  */
 export class TenantResolveMiddleware {
   private readonly logger = new Logger('TenantResolveMiddleware');
@@ -36,41 +37,11 @@ export class TenantResolveMiddleware {
   }
 
   /**
-   * Resolve the app this request is scoped to.
-   *
-   * Priority: `X-App-Id` header → `?appPublicId=` query → `body.appPublicId`
-   * → the account's default app. A supplied app id must belong to the
-   * tenant's account, otherwise the request is rejected with 404.
-   */
-  private async resolveApp(req: Request, accountId: string): Promise<PlatformTenantApp | null> {
-    const headerAppId = req.headers['x-app-id'];
-    const headerValue = Array.isArray(headerAppId) ? headerAppId[0] : headerAppId;
-
-    const queryAppId = typeof req.query?.appPublicId === 'string' ? req.query.appPublicId : undefined;
-
-    const bodyAppId =
-      typeof (req.body as { appPublicId?: unknown } | undefined)?.appPublicId === 'string'
-        ? (req.body as { appPublicId: string }).appPublicId
-        : undefined;
-
-    const requestedAppPublicId = headerValue?.trim() || queryAppId?.trim() || bodyAppId?.trim();
-
-    if (requestedAppPublicId) {
-      const app = await appService.get(accountId, requestedAppPublicId);
-      if (!app) return null;
-      return { id: app.id, publicId: app.publicId, projectId: app.projectId };
-    }
-
-    const defaultApp = await appService.resolveDefault(accountId);
-    return { id: defaultApp.id, publicId: defaultApp.publicId, projectId: defaultApp.projectId };
-  }
-
-  /**
    * Resolve tenant from platformKey.accountId (internal CUID).
    * Tries resolveAccount with publicId first, then falls back to getAccountById with internal ID.
    */
   public resolve = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const typedReq = req as RequestWithApp;
+    const typedReq = req as RequestWithTenant;
     const platformKey = (req as Request & { platformKey?: { accountId: string } }).platformKey;
 
     if (!platformKey?.accountId) {
@@ -79,6 +50,15 @@ export class TenantResolveMiddleware {
     }
 
     try {
+      // Already resolved for this request (the chain is mounted once per
+      // route group) — reuse it instead of hitting the database again.
+      const memoised = typedReq.__vvResolvedTenant;
+      if (memoised) {
+        typedReq.platformTenant = memoised;
+        next();
+        return;
+      }
+
       // First try by internal ID directly
       const byId = await this.tenantService.getAccountById(platformKey.accountId);
 
@@ -103,20 +83,6 @@ export class TenantResolveMiddleware {
         return;
       }
 
-      // Resolve the app this request is scoped to. Memoised per request so
-      // the double-mounted middleware only hits the DB once.
-      let defaultApp = typedReq.__vvResolvedApp;
-
-      if (!defaultApp) {
-        const resolved = await this.resolveApp(req, byId.id);
-        if (!resolved) {
-          res.status(404).json({ error: 'APP_NOT_FOUND', message: 'App not found' });
-          return;
-        }
-        defaultApp = resolved;
-        typedReq.__vvResolvedApp = resolved;
-      }
-
       const account: PlatformTenant = {
         accountId: byId.id,
         publicId: byId.publicId,
@@ -126,10 +92,10 @@ export class TenantResolveMiddleware {
           name: plan?.name ?? '',
           monthlyMessageLimit: (plan as { monthlyMessageLimit?: number })?.monthlyMessageLimit ?? null,
         },
-        defaultApp,
       };
 
       typedReq.platformTenant = account;
+      typedReq.__vvResolvedTenant = account;
       next();
     } catch (error) {
       this.logger.error(`Tenant resolve error: ${error}`);

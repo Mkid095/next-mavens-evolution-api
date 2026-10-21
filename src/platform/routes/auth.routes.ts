@@ -8,6 +8,8 @@ import {
   sessionAuthMiddleware,
 } from '../middleware/session-auth.middleware';
 import { platformRepository } from '../repository/platform.repository';
+import { AuditService } from '../services/audit.service';
+import { projectService } from '../services/project.service';
 import { SessionService } from '../services/session.service';
 import { settingsService } from '../services/settings.service';
 
@@ -33,6 +35,7 @@ export function getSessionService(): SessionService {
 }
 
 const router: Router = Router();
+const auditService = new AuditService();
 
 export { router as authRouter };
 
@@ -88,6 +91,25 @@ router.post('/login', async (req: Request, res: Response) => {
     maxAge: 86400 * 1000, // 24h in milliseconds
     path: '/',
   });
+
+  // Record the login in the audit log. It is filed under the account's
+  // default project so it shows up in that project's `auth` log. A failure
+  // to write the audit row must never break the login.
+  try {
+    const project = await projectService.resolveDefault(user.accountId);
+    await auditService.record(
+      user.accountId,
+      'AUTH_LOGIN',
+      { type: 'user', id: user.publicId },
+      {
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'],
+      },
+      { projectId: project.id, category: 'auth' },
+    );
+  } catch (error) {
+    console.warn(`[Auth] Could not record the login audit event: ${error}`);
+  }
 
   res.json({
     user: {

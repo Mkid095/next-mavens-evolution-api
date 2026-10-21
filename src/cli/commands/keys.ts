@@ -10,7 +10,7 @@
 import { Command } from 'commander';
 
 import { KNOWN_SCOPES as MCP_KNOWN_SCOPES } from '../../platform/mcp/tool-registry';
-import { ApiKeyDto } from '../client';
+import { ApiKeyDto, DefaultTokenDto } from '../client';
 import { CliContext, confirm, toCliError } from '../context';
 import { addCommonOptions, addJsonOption, globalOptions } from '../options';
 import { cell, color, dim, formatDate, renderKeyValue, renderTable } from '../output';
@@ -28,8 +28,9 @@ export function registerKeysCommand(program: Command): void {
       const ctx = new CliContext(globalOptions(command));
       try {
         const accountId = await ctx.accountId();
+        const projectId = await ctx.projectId();
         const client = ctx.client();
-        const apiKeys = await client.get<ApiKeyDto[]>(`/accounts/${accountId}/api-keys`);
+        const apiKeys = await client.get<ApiKeyDto[]>(`/accounts/${accountId}/projects/${projectId}/api-keys`);
 
         ctx.printer.result(apiKeys, () => {
           if (!apiKeys.length) {
@@ -67,10 +68,11 @@ export function registerKeysCommand(program: Command): void {
       const ctx = new CliContext(globalOptions(command));
       try {
         const accountId = await ctx.accountId();
+        const projectId = await ctx.projectId();
         const client = ctx.client();
         const scopes = options.scope ?? [];
         const response = await client.post<{ id: string; name: string; scopes: string[]; apiKey: string }>(
-          `/accounts/${accountId}/api-keys`,
+          `/accounts/${accountId}/projects/${projectId}/api-keys`,
           { name: options.name, scopes },
         );
 
@@ -114,6 +116,7 @@ export function registerKeysCommand(program: Command): void {
       const ctx = new CliContext(globalOptions(command));
       try {
         const accountId = await ctx.accountId();
+        const projectId = await ctx.projectId();
         const client = ctx.client();
 
         const ok = await confirm(`Revoke API key ${keyId}? Anything using it stops working.`, Boolean(options.yes));
@@ -122,7 +125,9 @@ export function registerKeysCommand(program: Command): void {
           return;
         }
 
-        const result = await client.delete<{ success: boolean }>(`/accounts/${accountId}/api-keys/${keyId}`);
+        const result = await client.delete<{ success: boolean }>(
+          `/accounts/${accountId}/projects/${projectId}/api-keys/${keyId}`,
+        );
         ctx.printer.result(result, `API key ${keyId} revoked.`);
       } catch (error) {
         throw toCliError(error, ctx.config.apiUrl);
@@ -130,6 +135,81 @@ export function registerKeysCommand(program: Command): void {
     });
   addCommonOptions(revoke);
   addJsonOption(revoke);
+
+  // ── keys default ─────────────────────────────────────────────────────────
+  // The project's default token. It is generated on first read and its
+  // plaintext is returned, because the MCP and CLI install guides need
+  // to show a configuration that actually works.
+  const showDefault = keys
+    .command('default')
+    .description("Show the project's default API token")
+    .action(async (options: Record<string, unknown>, command: Command) => {
+      const ctx = new CliContext(globalOptions(command));
+      try {
+        const accountId = await ctx.accountId();
+        const projectId = await ctx.projectId();
+        const client = ctx.client();
+        const token = await client.get<DefaultTokenDto>(
+          `/accounts/${accountId}/projects/${projectId}/api-keys/default`,
+        );
+
+        ctx.printer.result(token, () => {
+          const table = renderKeyValue([
+            ['ID', token.id],
+            ['Name', token.name],
+            ['Prefix', token.keyPrefix],
+            ['Scopes', token.scopes.join(', ')],
+            ['Created', formatDate(token.createdAt)],
+            ['Key', token.key],
+          ]);
+          return `${table}\n\nTreat the key above as a secret — it authenticates every request.`;
+        });
+      } catch (error) {
+        throw toCliError(error, ctx.config.apiUrl);
+      }
+    });
+  addCommonOptions(showDefault);
+  addJsonOption(showDefault);
+
+  // ── keys rotate ──────────────────────────────────────────────────────────
+  // Issues a new default token and revokes the old one immediately.
+  const rotate = keys
+    .command('rotate')
+    .description('Issue a new default API token and revoke the old one')
+    .option('-y, --yes', 'Do not ask for confirmation')
+    .action(async (options: { yes?: boolean }, command: Command) => {
+      const ctx = new CliContext(globalOptions(command));
+      try {
+        const accountId = await ctx.accountId();
+        const projectId = await ctx.projectId();
+        const client = ctx.client();
+
+        const ok = await confirm(
+          'Rotate the default API token? Anything using the current one stops working immediately.',
+          Boolean(options.yes),
+        );
+        if (!ok) {
+          ctx.printer.info('Aborted.');
+          return;
+        }
+
+        const token = await client.post<DefaultTokenDto>(
+          `/accounts/${accountId}/projects/${projectId}/api-keys/default/rotate`,
+          {},
+        );
+        ctx.printer.result(token, () =>
+          renderKeyValue([
+            ['ID', token.id],
+            ['Prefix', token.keyPrefix],
+            ['Key', token.key],
+          ]),
+        );
+      } catch (error) {
+        throw toCliError(error, ctx.config.apiUrl);
+      }
+    });
+  addCommonOptions(rotate);
+  addJsonOption(rotate);
 }
 
 /** Collect a repeatable `--scope` option. */

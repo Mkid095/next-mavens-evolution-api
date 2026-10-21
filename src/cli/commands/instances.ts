@@ -68,8 +68,9 @@ export function registerInstancesCommand(program: Command): void {
       const ctx = new CliContext(globalOptions(command));
       try {
         const accountId = await ctx.accountId();
+        const projectId = await ctx.projectId();
         const client = ctx.client();
-        const instances = await client.get<InstanceDto[]>(`/accounts/${accountId}/instances`);
+        const instances = await client.get<InstanceDto[]>(`/accounts/${accountId}/projects/${projectId}/instances`);
         const limited = options.limit ? instances.slice(0, Number(options.limit)) : instances;
 
         ctx.printer.result(limited, () => {
@@ -98,8 +99,11 @@ export function registerInstancesCommand(program: Command): void {
       const ctx = new CliContext(globalOptions(command));
       try {
         const accountId = await ctx.accountId();
+        const projectId = await ctx.projectId();
         const client = ctx.client();
-        const instance = await client.post<InstanceDto>(`/accounts/${accountId}/instances`, { name });
+        const instance = await client.post<InstanceDto>(`/accounts/${accountId}/projects/${projectId}/instances`, {
+          name,
+        });
 
         ctx.printer.result(instance, () =>
           [
@@ -131,8 +135,11 @@ export function registerInstancesCommand(program: Command): void {
       const ctx = new CliContext(globalOptions(command));
       try {
         const accountId = await ctx.accountId();
+        const projectId = await ctx.projectId();
         const client = ctx.client();
-        const instance = await client.get<InstanceDto>(`/accounts/${accountId}/instances/${publicId}`);
+        const instance = await client.get<InstanceDto>(
+          `/accounts/${accountId}/projects/${projectId}/instances/${publicId}`,
+        );
 
         ctx.printer.result(instance, () => {
           const lines = [
@@ -178,10 +185,11 @@ export function registerInstancesCommand(program: Command): void {
       const pollMs = Math.max(250, Number(options.poll));
       try {
         const accountId = await ctx.accountId();
+        const projectId = await ctx.projectId();
         const client = ctx.client();
 
         const start = await client.post<{ success: boolean; status: string }>(
-          `/accounts/${accountId}/instances/${publicId}/connect`,
+          `/accounts/${accountId}/projects/${projectId}/instances/${publicId}/connect`,
         );
         ctx.printer.info(`Connect requested — status ${start?.status ?? 'CONNECTING'}.`);
 
@@ -191,7 +199,9 @@ export function registerInstancesCommand(program: Command): void {
         let connected = false;
 
         while (Date.now() < deadline) {
-          const instance = await client.get<InstanceDto>(`/accounts/${accountId}/instances/${publicId}`);
+          const instance = await client.get<InstanceDto>(
+            `/accounts/${accountId}/projects/${projectId}/instances/${publicId}`,
+          );
 
           if (instance.status !== lastStatus) {
             lastStatus = instance.status;
@@ -263,9 +273,10 @@ export function registerInstancesCommand(program: Command): void {
       const ctx = new CliContext(globalOptions(command));
       try {
         const accountId = await ctx.accountId();
+        const projectId = await ctx.projectId();
         const client = ctx.client();
         const result = await client.post<{ success: boolean; status: string }>(
-          `/accounts/${accountId}/instances/${publicId}/disconnect`,
+          `/accounts/${accountId}/projects/${projectId}/instances/${publicId}/disconnect`,
         );
         ctx.printer.result(result, `Instance ${publicId} disconnected (${result?.status ?? 'DISCONNECTED'}).`);
       } catch (error) {
@@ -285,6 +296,7 @@ export function registerInstancesCommand(program: Command): void {
       const ctx = new CliContext(globalOptions(command));
       try {
         const accountId = await ctx.accountId();
+        const projectId = await ctx.projectId();
         const client = ctx.client();
 
         const ok = await confirm(`Delete instance ${publicId}? This cannot be undone.`, Boolean(options.yes));
@@ -293,7 +305,9 @@ export function registerInstancesCommand(program: Command): void {
           return;
         }
 
-        const result = await client.delete<{ success: boolean }>(`/accounts/${accountId}/instances/${publicId}`);
+        const result = await client.delete<{ success: boolean }>(
+          `/accounts/${accountId}/projects/${projectId}/instances/${publicId}`,
+        );
         ctx.printer.result(result, `Instance ${publicId} deleted.`);
       } catch (error) {
         throw toCliError(error, ctx.config.apiUrl);

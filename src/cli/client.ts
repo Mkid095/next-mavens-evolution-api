@@ -180,6 +180,45 @@ export interface MeResponse {
   publicId: string;
   status: string;
   plan: { planId: string; name: string; monthlyMessageLimit: number | null } | null;
+  /** The public id of the project the credential is scoped to. */
+  projectId: string | null;
+  project: { id: string } | null;
+}
+
+/** Project DTO returned by the project endpoints. */
+export interface ProjectDto {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** The project's default token — the plaintext is included. */
+export interface DefaultTokenDto {
+  id: string;
+  name: string;
+  keyPrefix: string;
+  key: string;
+  scopes: string[];
+  createdAt: string;
+}
+
+/** One entry of the project log. */
+export interface LogEventDto {
+  id: string;
+  category: string;
+  action: string;
+  summary: string;
+  method?: string;
+  path?: string;
+  status?: number;
+  durationMs?: number;
+  tool?: string;
+  instancePublicId?: string;
+  createdAt: string;
 }
 
 /** Instance DTO returned by the instance endpoints. */
