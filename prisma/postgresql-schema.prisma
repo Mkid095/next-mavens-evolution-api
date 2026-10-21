@@ -783,7 +783,7 @@ model PlatformAccount {
   updatedAt DateTime @updatedAt
 
   users              PlatformUser[]
-  apiKeys            PlatformApiKey[]
+  apiKeys            PlatformApiKey[] @relation("AccountApiKeys")
   subscriptions      PlatformSubscription[]
   rateLimitPolicies  PlatformRateLimitPolicy[]
   auditLogs          PlatformAuditLog[]
@@ -795,6 +795,17 @@ model PlatformAccount {
   contacts           PlatformContact[]
   groups             PlatformGroup[]
   projects           PlatformProject[]
+
+  /// The account's personal access token — a key that is NOT scoped to a
+  /// single project and can therefore act on every project of the account.
+  /// The plaintext is stored encrypted (AES-256-GCM) so the Settings page
+  /// can show it again; `defaultApiKeyId` points at the PlatformApiKey row
+  /// that actually enforces it.
+  defaultApiKey       PlatformApiKey? @relation("AccountDefaultToken", fields: [defaultApiKeyId], references: [id], onDelete: SetNull)
+  defaultApiKeyId       String?   @unique @db.VarChar(255)
+  defaultTokenEncrypted String?   @db.Text
+  defaultTokenPrefix    String?   @db.VarChar(20)
+  defaultTokenCreatedAt DateTime? @db.Timestamp
 
   @@index([status])
 }
@@ -867,7 +878,10 @@ model PlatformApiKey {
   id         String    @id @default(cuid())
   publicId   String    @unique @db.VarChar(50)
   accountId  String
-  projectId      String
+  /// The project this key is scoped to. NULL for an account-level personal
+  /// access token, which can act on every project of the account. A key
+  /// with a project can ONLY act on that project.
+  projectId      String?
   keyHash    String    @unique @db.VarChar(64)
   keyPrefix  String    @db.VarChar(16)
   name       String?   @db.VarChar(255)
@@ -877,12 +891,15 @@ model PlatformApiKey {
   lastUsedAt DateTime?
   createdAt  DateTime  @default(now()) @db.Timestamp
 
-  account   PlatformAccount          @relation(fields: [accountId], references: [id])
-  project       PlatformProject              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  account   PlatformAccount          @relation("AccountApiKeys", fields: [accountId], references: [id])
+  project       PlatformProject?             @relation(fields: [projectId], references: [id], onDelete: Cascade)
   instances PlatformApiKeyInstance[]
 
   /// Set when this key is the default token of its project.
   defaultForProject PlatformProject? @relation("ProjectDefaultToken")
+
+  /// Set when this key is the account's personal access token.
+  defaultForAccount PlatformAccount? @relation("AccountDefaultToken")
 
   @@index([accountId])
   @@index([projectId])

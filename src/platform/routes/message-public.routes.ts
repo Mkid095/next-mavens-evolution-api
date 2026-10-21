@@ -10,6 +10,7 @@ import { platformRepository } from '../repository/platform.repository';
 import { AuditService } from '../services/audit.service';
 import { PlatformTenant } from '../types/platform-tenant';
 import { getSessionService } from './auth.routes';
+import { keyIsScopedElsewhere } from './project-scope';
 
 const router: Router = Router();
 const auditService = new AuditService();
@@ -53,6 +54,17 @@ router.post(
 
     if (!platformInstance) {
       res.status(404).json({ error: 'NOT_FOUND', message: 'Instance not found' });
+      return;
+    }
+
+    // A project-scoped key may only send through instances of its own
+    // project. An account-level personal access token may use any
+    // instance of the account.
+    if (keyIsScopedElsewhere(req, platformInstance.projectId)) {
+      res.status(403).json({
+        error: 'PROJECT_ACCESS_DENIED',
+        message: 'This API key is scoped to a different project',
+      });
       return;
     }
 

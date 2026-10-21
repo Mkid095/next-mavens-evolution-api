@@ -10,6 +10,13 @@ export interface ApiClientOptions {
   apiKey: string;
   /** Request timeout in milliseconds. */
   timeoutMs?: number;
+  /**
+   * Headers sent with every request.
+   *
+   * `X-Viventure-Project` lives here: an account-level personal access
+   * token can act on any project, and this is how it says which one.
+   */
+  headers?: Record<string, string>;
 }
 
 export interface RequestOptions {
@@ -60,12 +67,14 @@ export class ApiClient {
   public readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly timeoutMs: number;
+  private readonly defaultHeaders: Record<string, string>;
   private accountPromise?: Promise<MeResponse>;
 
   constructor(options: ApiClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.apiKey = options.apiKey;
     this.timeoutMs = options.timeoutMs ?? 30_000;
+    this.defaultHeaders = options.headers ?? {};
   }
 
   /** The platform tenant behind the current key. Cached for the process. */
@@ -99,6 +108,7 @@ export class ApiClient {
     const headers: Record<string, string> = {
       Accept: 'application/json',
       'X-API-Key': this.apiKey,
+      ...this.defaultHeaders,
       ...(options.headers ?? {}),
     };
     if (options.body !== undefined) headers['Content-Type'] = 'application/json';

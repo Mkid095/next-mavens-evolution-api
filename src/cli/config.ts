@@ -29,6 +29,11 @@ export interface ResolvedConfig {
   apiUrl: string;
   apiKey?: string;
   docsUrl: string;
+  /**
+   * The project to act on, by slug or public id. Only an account-level
+   * personal access token needs it — a project key already knows.
+   */
+  project?: string;
   sources: {
     apiUrl: ConfigSource;
     apiKey: ConfigSource;
@@ -113,7 +118,9 @@ function normalizeDocsUrl(raw: string): string {
 /**
  * Resolve the effective configuration from flags, environment and file.
  */
-export function resolveConfig(flags: { apiUrl?: string; apiKey?: string; docsUrl?: string } = {}): ResolvedConfig {
+export function resolveConfig(
+  flags: { apiUrl?: string; apiKey?: string; docsUrl?: string; project?: string } = {},
+): ResolvedConfig {
   const stored = readStoredConfig();
 
   const envApiUrl = process.env.VIVENTURE_API_URL;
@@ -133,6 +140,7 @@ export function resolveConfig(flags: { apiUrl?: string; apiKey?: string; docsUrl
     apiUrl: normalizeApiUrl(apiUrlRaw),
     apiKey,
     docsUrl: normalizeDocsUrl(docsUrlRaw),
+    project: flags.project,
     sources: {
       apiUrl: apiUrlSource,
       apiKey: apiKeySource,

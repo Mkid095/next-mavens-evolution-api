@@ -45,7 +45,7 @@ export class PlatformAuthMiddleware {
       // Attach to request for downstream use
       (
         req as Request & {
-          platformKey?: { accountId: string; apiKeyId: string; projectId: string; scopes: string[] };
+          platformKey?: { accountId: string; apiKeyId: string; projectId: string | null; scopes: string[] };
         }
       ).platformKey = {
         accountId: keyInfo.accountId,
@@ -77,7 +77,7 @@ export class PlatformAuthMiddleware {
       if (keyInfo) {
         (
           req as Request & {
-            platformKey?: { accountId: string; apiKeyId: string; projectId: string; scopes: string[] };
+            platformKey?: { accountId: string; apiKeyId: string; projectId: string | null; scopes: string[] };
           }
         ).platformKey = {
           accountId: keyInfo.accountId,

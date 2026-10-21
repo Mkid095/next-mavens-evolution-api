@@ -23,6 +23,37 @@ export interface LogPage {
   nextCursor: string | null;
 }
 
+/**
+ * One log event, in full.
+ *
+ * The list gives the row; the detail gives everything behind it — who
+ * called, from where, what was touched and what the event carried.
+ */
+export interface LogEventDetail extends LogEvent {
+  /** The kind of thing the event acted on — instance, api-key, message. */
+  resource?: string;
+  /** The identifier of that thing. */
+  resourceId?: string;
+  /** The id of the request that caused the event, when there was one. */
+  requestId?: string;
+  /** The caller's address. */
+  ipAddress?: string;
+  /** The caller's user agent. */
+  userAgent?: string;
+  /** Whether the action succeeded. */
+  success?: boolean;
+  /** The raw metadata the event was recorded with. */
+  metadata?: Record<string, unknown>;
+  /** Present for a message event. */
+  message?: {
+    type: string;
+    recipient: string;
+    status: string;
+    sentAt?: string;
+    content?: unknown;
+  };
+}
+
 /** The categories the endpoint can filter on. `all` returns everything. */
 export const LOG_CATEGORIES: AuditCategory[] = ['api', 'mcp', 'auth', 'message'];
 
@@ -40,12 +71,48 @@ function maskRecipient(recipient: string): string {
   return `***${digits.slice(-4)}`;
 }
 
-/** Turn "INSTANCE_CREATE" into "Instance create". */
+/** Acronyms that must stay uppercase when an action name is made readable. */
+const ACRONYMS = new Set(['api', 'mcp', 'id', 'url', 'qr', 'cli']);
+
+/** Turn "INSTANCE_CREATE" into "Instance create", keeping "API" and "MCP" intact. */
 function humanize(action: string): string {
-  const text = String(action ?? '')
+  const words = String(action ?? '')
     .toLowerCase()
-    .replace(/_/g, ' ');
-  return text.charAt(0).toUpperCase() + text.slice(1);
+    .split('_')
+    .filter(Boolean)
+    .map((word, index) => {
+      if (ACRONYMS.has(word)) return word.toUpperCase();
+      // The first word is capitalised; the rest stay lowercase.
+      return index === 0 ? word.charAt(0).toUpperCase() + word.slice(1) : word;
+    });
+  return words.join(' ');
+}
+
+/**
+ * Is this path segment an identifier rather than a name?
+ * `acct_10632c…`, `proj_9a083ec5` and bare cuids are ids.
+ */
+function isIdSegment(segment: string): boolean {
+  return /^[a-z]+_[a-z0-9]+$/i.test(segment) || /^[0-9a-f]{16,}$/i.test(segment);
+}
+
+/**
+ * The last meaningful noun in a request path — `instances`, `logs`, `mcp`.
+ *
+ * Identifier segments are skipped, so the label names the thing that was
+ * acted on rather than the id of the thing that was acted on. This is what
+ * keeps the log row from printing the same path twice: once as the summary
+ * and once as the request line.
+ */
+function shortResource(path: string): string | null {
+  const segments = String(path ?? '')
+    .split('/')
+    .filter(Boolean);
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (isIdSegment(segments[i])) continue;
+    return segments[i].replace(/[-_]/g, ' ');
+  }
+  return null;
 }
 
 /** Encode a pagination cursor: `createdAt|id`, base64url. */
@@ -174,19 +241,41 @@ export class LogService {
       const metadata = (row.metadata as Record<string, unknown> | null) ?? {};
       const category = (metadata.category as AuditCategory | undefined) ?? categorizeAction(row.action);
 
+      const method = typeof metadata.method === 'string' ? metadata.method : undefined;
+      const path = typeof metadata.path === 'string' ? metadata.path : undefined;
+      const tool = typeof metadata.tool === 'string' ? metadata.tool : undefined;
+
       const event: LogEvent = {
         id: row.id,
         category,
         action: row.action,
-        summary: `${humanize(row.action)}${row.resourceId ? `: ${row.resourceId}` : ''}`,
+        summary: '',
         createdAt: row.createdAt.toISOString(),
       };
 
-      if (typeof metadata.method === 'string') event.method = metadata.method;
-      if (typeof metadata.path === 'string') event.path = metadata.path;
+      /*
+       * The summary must not repeat what the row already shows.
+       *
+       * An API request shows its full path on the request line, so the
+       * summary names the resource instead of repeating the path. An MCP
+       * call shows the tool name on its own chip, so it needs no summary at
+       * all. Everything else — a message, a login — is only described by
+       * its summary, so it keeps the resource id.
+       */
+      if (path) {
+        const label = shortResource(path);
+        event.summary = label ? `${humanize(row.action)}: ${label}` : humanize(row.action);
+      } else if (category === 'mcp') {
+        event.summary = '';
+      } else {
+        event.summary = `${humanize(row.action)}${row.resourceId ? `: ${row.resourceId}` : ''}`;
+      }
+
+      if (method) event.method = method;
+      if (path) event.path = path;
       if (typeof metadata.status === 'number') event.status = metadata.status;
       if (typeof metadata.durationMs === 'number') event.durationMs = metadata.durationMs;
-      if (typeof metadata.tool === 'string') event.tool = metadata.tool;
+      if (tool) event.tool = tool;
       if (typeof metadata.instancePublicId === 'string') {
         event.instancePublicId = metadata.instancePublicId;
       } else if (row.resource === 'instance' && row.resourceId) {
@@ -198,6 +287,95 @@ export class LogService {
 
       return event;
     });
+  }
+
+  /**
+   * Read one event in full.
+   *
+   * The event is looked up inside the project, so a log id from another
+   * project is simply not found — the detail of one project is not
+   * readable through another.
+   */
+  public async get(projectId: string, eventId: string): Promise<LogEventDetail | null> {
+    const row = await platformRepository.platformAuditLog.findFirst({
+      where: { id: eventId, projectId },
+    });
+
+    if (row) {
+      const metadata = (row.metadata as Record<string, unknown> | null) ?? {};
+      const category = (metadata.category as AuditCategory | undefined) ?? categorizeAction(row.action);
+
+      const detail: LogEventDetail = {
+        id: row.id,
+        category,
+        action: row.action,
+        summary: '',
+        createdAt: row.createdAt.toISOString(),
+        resource: row.resource ?? undefined,
+        resourceId: row.resourceId ?? undefined,
+        requestId: row.requestId ?? undefined,
+        ipAddress: row.ipAddress ?? undefined,
+        userAgent: row.userAgent ?? undefined,
+        success: row.success,
+        metadata,
+      };
+
+      if (typeof metadata.method === 'string') detail.method = metadata.method;
+      if (typeof metadata.path === 'string') detail.path = metadata.path;
+      if (typeof metadata.status === 'number') detail.status = metadata.status;
+      if (typeof metadata.durationMs === 'number') detail.durationMs = metadata.durationMs;
+      if (typeof metadata.tool === 'string') detail.tool = metadata.tool;
+      if (typeof metadata.instancePublicId === 'string') {
+        detail.instancePublicId = metadata.instancePublicId;
+      } else if (row.resource === 'instance' && row.resourceId) {
+        detail.instancePublicId = row.resourceId;
+      }
+      if (category === 'mcp' && row.resourceId) {
+        detail.tool = row.resourceId;
+      }
+
+      if (detail.path) {
+        const label = shortResource(detail.path);
+        detail.summary = label ? `${humanize(row.action)}: ${label}` : humanize(row.action);
+      } else if (category === 'mcp') {
+        detail.summary = '';
+      } else {
+        detail.summary = `${humanize(row.action)}${row.resourceId ? `: ${row.resourceId}` : ''}`;
+      }
+
+      return detail;
+    }
+
+    // Not an audit row — it may be a message. The list serves both, so
+    // the detail has to as well.
+    const command = await platformRepository.platformMessageCommand.findFirst({
+      where: { id: eventId, projectId },
+    });
+
+    if (!command) return null;
+
+    const instance = await platformRepository.platformInstance.findFirst({
+      where: { id: command.instanceId },
+      select: { publicId: true },
+    });
+
+    return {
+      id: command.id,
+      category: 'message',
+      action: 'MESSAGE_SEND',
+      summary: `Message ${command.type} to ${maskRecipient(command.recipient)} (${command.status})`,
+      instancePublicId: instance?.publicId,
+      resource: 'message',
+      resourceId: command.messageId,
+      createdAt: command.createdAt.toISOString(),
+      message: {
+        type: command.type,
+        recipient: maskRecipient(command.recipient),
+        status: command.status,
+        sentAt: command.sentAt?.toISOString(),
+        content: command.content ?? undefined,
+      },
+    };
   }
 
   /**

@@ -17,6 +17,7 @@ export function addCommonOptions(command: Command): Command {
     .option('--api-url <url>', 'Override the Viventure API base URL')
     .option('--api-key <key>', 'Use this API key instead of the configured one')
     .option('--timeout <seconds>', 'HTTP request timeout in seconds', '30')
+    .option('--project <slug>', 'The project to act on (an account-level token can pick any)')
     .option('--no-color', 'Disable coloured output');
 }
 
@@ -50,6 +51,7 @@ export function globalOptions(command: Command): GlobalOptions {
   return {
     apiUrl: resolveOption<string>(command, 'apiUrl'),
     apiKey: resolveOption<string>(command, 'apiKey'),
+    project: resolveOption<string>(command, 'project'),
     json: resolveOption<boolean>(command, 'json'),
     color: resolveOption<boolean>(command, 'color'),
     timeout: Number.isFinite(timeout as number) ? (timeout as number) : undefined,

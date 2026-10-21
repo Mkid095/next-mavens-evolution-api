@@ -30,6 +30,14 @@ export interface GlobalOptions {
   json?: boolean;
   color?: boolean;
   timeout?: number;
+  /**
+   * The project to act on, by slug or public id.
+   *
+   * A project-scoped key already knows its project. An account-level
+   * personal access token can act on any of them, and this is how it
+   * says which one.
+   */
+  project?: string;
 }
 
 /**
@@ -104,6 +112,7 @@ export class CliContext {
       apiUrl: options.apiUrl,
       apiKey: options.apiKey,
       docsUrl: options.docsUrl,
+      project: options.project,
     });
     if (options.color === false) {
       setColorEnabled(false);
@@ -123,6 +132,7 @@ export class CliContext {
       this.clientInstance = new ApiClient({
         baseUrl: this.config.apiUrl,
         apiKey: this.config.apiKey,
+        headers: this.config.project ? { 'X-Viventure-Project': this.config.project } : undefined,
       });
     }
     return this.clientInstance;
@@ -140,10 +150,16 @@ export class CliContext {
   }
 
   /**
-   * The project public id (proj_…) the credential is scoped to.
+   * The project public id (proj_…) the request acts on.
    *
-   * An API key belongs to a project, so everything it does happens
-   * inside that project. `/me` reports which one.
+   * A project-scoped key belongs to exactly one project, and `/me`
+   * reports which. An account-level personal access token belongs to no
+   * project: it acts on the one named with `--project`, or on the
+   * account's default project when none is named.
+   *
+   * When `--project` names a project the credential cannot reach, the
+   * command fails loudly. Silently acting on a different project than
+   * the one that was asked for is worse than an error.
    */
   public async projectId(): Promise<string> {
     const client = this.client();
@@ -151,13 +167,44 @@ export class CliContext {
       const me = await client.me();
       if (!me.projectId) {
         throw new CliError('This API key is not scoped to a project.', [
-          'Run `viventure login` with a key that belongs to a project.',
+          'Name the project to act on with --project <slug>.',
         ]);
       }
+
+      const wanted = this.config.project;
+      if (wanted) {
+        const resolved = await this.resolveProject(wanted);
+        if (!resolved) {
+          throw new CliError(`No project named "${wanted}" on this account.`, [
+            'Run `viventure projects list` to see the available projects.',
+          ]);
+        }
+        if (resolved.id !== me.projectId) {
+          throw new CliError(`This credential is scoped to a different project than "${wanted}".`, [
+            `It can only act on ${me.projectId}.`,
+            'Use a personal access token to act on every project — see `viventure keys default`.',
+          ]);
+        }
+      }
+
       return me.projectId;
     } catch (error) {
       throw toCliError(error, this.config.apiUrl);
     }
+  }
+
+  /**
+   * Find a project of the account by slug or public id.
+   * Returns null when the account has no such project.
+   */
+  private async resolveProject(nameOrSlug: string): Promise<{ id: string; name: string } | null> {
+    const accountId = await this.accountId();
+    const projects = await this.client().get<{ id: string; name: string; slug: string }[]>(
+      `/accounts/${accountId}/projects`,
+    );
+    const wanted = nameOrSlug.trim();
+    const found = projects.find((p) => p.slug === wanted || p.id === wanted);
+    return found ? { id: found.id, name: found.name } : null;
   }
 }
 

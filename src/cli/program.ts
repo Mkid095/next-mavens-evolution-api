@@ -10,7 +10,7 @@ import { Command } from 'commander';
 import { registerAuthCommands } from './commands/auth';
 import { registerDocsCommand } from './commands/docs';
 import { registerInstancesCommand } from './commands/instances';
-import { registerKeysCommand } from './commands/keys';
+import { registerKeysCommand, registerProjectKeysCommand } from './commands/keys';
 import { registerMcpCommand } from './commands/mcp';
 import { registerMessagesCommand } from './commands/messages';
 import { registerProjectsCommand } from './commands/projects';
@@ -54,6 +54,9 @@ Examples:
   $ viventure instances connect inst_1a2b3c4d
   $ viventure messages send --instance inst_1a2b3c4d --to +5511999999999 --text "hi"
   $ viventure keys create --name "CI" --scope instances:read --scope messages:send
+  $ viventure keys default
+  $ viventure project keys list --project marketing-site
+  $ viventure instances list --project marketing-site
   $ viventure mcp config
   $ viventure docs webhooks
 
@@ -70,6 +73,7 @@ Configuration:
   registerInstancesCommand(program);
   registerMessagesCommand(program);
   registerKeysCommand(program);
+  registerProjectKeysCommand(program);
   registerWebhooksCommand(program);
   registerMcpCommand(program);
   registerDocsCommand(program);

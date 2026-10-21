@@ -55,4 +55,33 @@ router.get(
   },
 );
 
+/**
+ * Read one event in full.
+ * GET /accounts/:accountId/projects/:projectPublicId/logs/:logId
+ *
+ * The event is looked up inside the project, so an id belonging to
+ * another project is simply not found.
+ */
+router.get(
+  '/:accountId/projects/:projectPublicId/logs/:logId',
+  hybridAuth(getSessionService()),
+  tenantResolveMiddleware.resolve,
+  async (req: Request, res: Response) => {
+    try {
+      const context = await requireProjectContext(req, res);
+      if (!context) return;
+
+      const event = await logService.get(context.project.id, req.params.logId);
+      if (!event) {
+        res.status(404).json({ error: 'NOT_FOUND', message: 'Log event not found' });
+        return;
+      }
+
+      res.json(event);
+    } catch {
+      res.status(500).json({ error: 'FETCH_ERROR' });
+    }
+  },
+);
+
 export { router as logRoutes };

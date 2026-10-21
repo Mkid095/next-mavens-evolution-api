@@ -7,14 +7,15 @@ export class PlatformAuthService {
   private readonly logger = new Logger('PlatformAuthService');
 
   /**
-   * Create an API key for a project.
+   * Create an API key.
    *
    * `projectId` is the internal PlatformProject id (cuid) the key is
-   * scoped to — the `projectId` column is NOT NULL in the database.
+   * scoped to, or NULL for an account-level personal access token — a
+   * credential that can act on every project of the account.
    */
   public async createApiKey(
     accountId: string,
-    projectId: string,
+    projectId: string | null,
     name: string,
     scopes: string[],
     expiresAt: Date | undefined,
@@ -39,7 +40,9 @@ export class PlatformAuthService {
       select: { id: true },
     });
 
-    this.logger.info(`API key created: ${publicId} for account ${accountId} project ${projectId}`);
+    this.logger.info(
+      `API key created: ${publicId} for account ${accountId} project ${projectId ?? 'all (account level)'}`,
+    );
     return { id: created.id, publicId, plaintextKey, keyPrefix };
   }
 
@@ -47,13 +50,15 @@ export class PlatformAuthService {
    * Validate a plaintext API key.
    * Returns the key record's internal id, publicId, accountId, projectId,
    * scopes, and expiry.
+   *
+   * `projectId` is null for an account-level personal access token.
    * Returns null if the key is invalid, revoked, or expired.
    */
   public async validateApiKey(plaintextKey: string): Promise<{
     id: string;
     publicId: string;
     accountId: string;
-    projectId: string;
+    projectId: string | null;
     scopes: string[];
     expiresAt: Date | null;
   } | null> {
@@ -133,6 +138,30 @@ export class PlatformAuthService {
   public async listApiKeys(accountId: string, projectId?: string) {
     const keys = await platformRepository.platformApiKey.findMany({
       where: { accountId, ...(projectId ? { projectId } : {}) },
+      select: {
+        id: true,
+        publicId: true,
+        projectId: true,
+        name: true,
+        keyPrefix: true,
+        scopes: true,
+        createdAt: true,
+        expiresAt: true,
+        revokedAt: true,
+        lastUsedAt: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    return keys;
+  }
+
+  /**
+   * List the account-level personal access tokens — the keys that are not
+   * scoped to a single project and can act on every project of the account.
+   */
+  public async listAccountApiKeys(accountId: string) {
+    const keys = await platformRepository.platformApiKey.findMany({
+      where: { accountId, projectId: null },
       select: {
         id: true,
         publicId: true,
