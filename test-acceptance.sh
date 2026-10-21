@@ -7,10 +7,15 @@ CORS="http://localhost:3000"
 TS=$(date +%s)
 PASS=0; FAIL=0
 
-# Gate password for account creation (POST /platform/onboard and
-# POST /platform/auth/signup). Override with COMPANY_GATE_PASSWORD in the
-# environment; it must match the API's own value.
-COMPANY_GATE_PASSWORD="${COMPANY_GATE_PASSWORD:-COMPANY_GATE_PASSWORD_PLACEHOLDER}"
+# The company gate password gates account creation (POST /platform/onboard
+# and POST /platform/auth/signup). It is a secret, so it is not stored in
+# this repository — export it before running:
+#   COMPANY_GATE_PASSWORD=… ./test-acceptance.sh
+if [ -z "${COMPANY_GATE_PASSWORD:-}" ]; then
+  echo "COMPANY_GATE_PASSWORD is not set — it gates account creation."
+  echo "Export it and re-run:  COMPANY_GATE_PASSWORD=… $0"
+  exit 1
+fi
 
 pass() { echo "  ✅ $1"; ((PASS++)); }
 fail() { echo "  ❌ $1"; ((FAIL++)); }
