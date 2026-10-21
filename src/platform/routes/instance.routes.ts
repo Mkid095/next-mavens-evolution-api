@@ -382,6 +382,16 @@ router.delete(
         // Ignore disconnect errors when deleting
       }
 
+      // Take the engine-side session with it. Without this the Baileys
+      // credentials and the engine's own row survive the deletion, and
+      // every instance that is ever deleted leaves a stale session
+      // behind.
+      try {
+        await evolutionAdapter.removeInstance(instance.id);
+      } catch {
+        // Ignore removal errors when deleting
+      }
+
       await platformRepository.platformInstance.delete({
         where: { id: instance.id },
       });

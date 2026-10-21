@@ -960,6 +960,9 @@ model PlatformMessageCommand {
   updatedAt      DateTime     @updatedAt
 
   project PlatformProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  /// The instance the message goes out through. The foreign key is what
+  /// stops a deleted instance from leaving its messages behind.
+  instance PlatformInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
 
   @@unique([accountId, instanceId, idempotencyKey])
   @@index([instanceId, status])
@@ -1032,6 +1035,7 @@ model PlatformInstance {
   lifecycleEvents InstanceEventLog[]
   contacts        PlatformContact[]
   groups          PlatformGroup[]
+  messageCmds     PlatformMessageCommand[]
   webhooks        PlatformWebhook[]
   apiKeyBindings  PlatformApiKeyInstance[]
 

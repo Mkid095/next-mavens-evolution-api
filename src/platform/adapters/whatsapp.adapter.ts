@@ -102,6 +102,16 @@ export interface IWhatsAppAdapter {
   disconnectInstance(instanceId: string): Promise<void>;
 
   /**
+   * Remove the engine-side session for an instance.
+   *
+   * Disconnecting leaves the engine's own record of the session behind —
+   * the Baileys credentials and the socket's row. Deleting the platform
+   * instance has to take that with it, or every instance that is ever
+   * deleted leaves a stale session behind forever.
+   */
+  removeInstance(instanceId: string): Promise<void>;
+
+  /**
    * Disconnect and reconnect (logout + connect).
    */
   restartInstance(instanceId: string): Promise<void>;

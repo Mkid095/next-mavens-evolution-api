@@ -222,6 +222,14 @@ export class InstanceService {
       this.logger.warn(`Error disconnecting instance ${instance.publicId} during delete: ${err}`);
     }
 
+    // …and then the engine's own session, so a deleted instance does not
+    // leave its WhatsApp credentials behind.
+    try {
+      await evolutionAdapter.removeInstance(instanceId);
+    } catch (err) {
+      this.logger.warn(`Error removing the engine session of ${instance.publicId}: ${err}`);
+    }
+
     await platformRepository.platformInstance.delete({
       where: { id: instanceId },
     });

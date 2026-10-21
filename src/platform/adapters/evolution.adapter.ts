@@ -198,6 +198,46 @@ export class EvolutionAdapter implements IWhatsAppAdapter {
   }
 
   // ──────────────────────────────────────────────────────────────────────
+  //  Remove
+  // ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * Delete the engine-side session row for an instance.
+   *
+   * The engine's `Instance` row is what the Baileys manager keys its
+   * socket on, and the `Session` row hanging off it holds the WhatsApp
+   * credentials. Both have to go when the platform instance goes,
+   * otherwise a deleted number keeps a credential and a session row
+   * forever.
+   */
+  async removeInstance(instanceId: string): Promise<void> {
+    const platformInstance = await platformRepository.platformInstance.findUnique({
+      where: { id: instanceId },
+      select: { id: true, name: true },
+    });
+
+    if (!platformInstance) return;
+
+    // The socket goes first — deleting the row out from under a live
+    // Baileys connection leaves it running with no record of itself.
+    const existing = waMonitor.waInstances[platformInstance.name];
+    if (existing) {
+      try {
+        await (existing as any).logoutInstance();
+      } catch (err) {
+        this.logger.warn(`Logout error for ${platformInstance.name} during removal: ${err}`);
+      }
+    }
+    this.qrCache.delete(platformInstance.name);
+    delete waMonitor.waInstances[platformInstance.name];
+
+    // The engine's Session row cascades from here.
+    await platformRepository.instance.deleteMany({
+      where: { name: platformInstance.name },
+    });
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
   //  Restart
   // ──────────────────────────────────────────────────────────────────────
 
