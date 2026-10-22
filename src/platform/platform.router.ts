@@ -19,6 +19,7 @@ import { activityRoutes } from './routes/activity.routes';
 import { apiKeyRoutes } from './routes/api-key.routes';
 import { authRouter, getCompanyGatePassword, getSessionService } from './routes/auth.routes';
 import { contactRoutes } from './routes/contact.routes';
+import { docsRoutes } from './routes/docs.routes';
 import { groupRoutes } from './routes/group.routes';
 import { instanceRoutes } from './routes/instance.routes';
 import { logRoutes } from './routes/log.routes';
@@ -198,6 +199,11 @@ router.use('/platform/sse', createSseRouter(getSessionService()));
  */
 router.use('/platform/mcp', mcpRouter);
 router.use('/platform/activity', hybridAuth(getSessionService()), tenantResolveMiddleware.resolve, activityRoutes);
+
+// The platform documentation. It is public — the same pages are on the
+// public docs site — so the CLI and any integrator can pull the full
+// reference without a credential.
+router.use('/platform/docs', docsRoutes);
 
 /**
  * Web console routes — session auth + API key auth.

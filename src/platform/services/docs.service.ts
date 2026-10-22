@@ -257,9 +257,32 @@ export class DocsService {
 
   /**
    * Fetch the rendered body of a page from the docs site.
-   * Never throws — the caller gets a warning instead.
+   *
+   * The docs site renders every page to Markdown itself — it is the same
+   * Markdown the "Copy page as Markdown" button hands over — so that is
+   * what is fetched. It is faithful by construction: there is no second
+   * converter that can drift from the page.
+   *
+   * If the Markdown endpoint is not there (an older docs deployment), the
+   * page is fetched as HTML and converted. Never throws — the caller gets
+   * a warning instead.
    */
   private async fetchBody(slug: string): Promise<{ body: string | null; warning?: string }> {
+    const markdownUrl = `${this.baseUrl}/api/docs/${encodeURIComponent(slug)}`;
+
+    try {
+      const response = await fetch(markdownUrl, {
+        headers: { Accept: 'text/markdown' },
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+      if (response.ok) {
+        const markdown = (await response.text()).trim();
+        if (markdown) return { body: markdown };
+      }
+    } catch {
+      /* fall through to the HTML fallback */
+    }
+
     const url = this.pageUrl(slug);
     try {
       const response = await fetch(url, {
@@ -287,6 +310,37 @@ export class DocsService {
         body: null,
         warning: `Could not reach the documentation site (${url}): ${reason}. The page metadata above is still accurate.`,
       };
+    }
+  }
+
+  /**
+   * The whole documentation as one Markdown document.
+   *
+   * This is the document to hand to an AI tool, paste into a ticket, or
+   * keep on disk as an offline reference. Null when the docs site cannot
+   * be reached.
+   */
+  public async getAllPages(): Promise<{ content: string | null; warning?: string }> {
+    const url = `${this.baseUrl}/api/docs`;
+    try {
+      const response = await fetch(url, {
+        headers: { Accept: 'text/markdown' },
+        signal: AbortSignal.timeout(this.timeoutMs * 3),
+      });
+      if (!response.ok) {
+        return {
+          content: null,
+          warning: `The documentation site returned HTTP ${response.status} for ${url}.`,
+        };
+      }
+      const content = (await response.text()).trim();
+      if (!content) {
+        return { content: null, warning: `The documentation site returned an empty document for ${url}.` };
+      }
+      return { content };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { content: null, warning: `Could not reach the documentation site (${url}): ${reason}.` };
     }
   }
 

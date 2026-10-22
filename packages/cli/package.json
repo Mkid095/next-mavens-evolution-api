@@ -1,6 +1,6 @@
 {
   "name": "@viventure/cli",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "The viventure command line — drive the Viventure WhatsApp platform from a terminal",
   "license": "UNLICENSED",
   "private": false,

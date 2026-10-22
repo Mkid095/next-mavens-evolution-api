@@ -106,6 +106,7 @@ export class CliContext {
   public readonly config: ResolvedConfig;
   public readonly printer: Printer;
   private clientInstance?: ApiClient;
+  private publicClientInstance?: ApiClient;
 
   constructor(options: GlobalOptions = {}) {
     this.config = resolveConfig({
@@ -136,6 +137,19 @@ export class CliContext {
       });
     }
     return this.clientInstance;
+  }
+
+  /**
+   * A client for the PUBLIC endpoints — the ones that need no key.
+   *
+   * The documentation is public: the same pages are on the docs site.
+   * A reader who has not logged in yet can still read the reference.
+   */
+  public publicClient(): ApiClient {
+    if (!this.publicClientInstance) {
+      this.publicClientInstance = new ApiClient({ baseUrl: this.config.apiUrl });
+    }
+    return this.publicClientInstance;
   }
 
   /** The account public id (acct_…) for the authenticated key. */

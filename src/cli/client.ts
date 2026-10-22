@@ -7,7 +7,8 @@
 
 export interface ApiClientOptions {
   baseUrl: string;
-  apiKey: string;
+  /** The key to authenticate with. Omitted for the public endpoints. */
+  apiKey?: string;
   /** Request timeout in milliseconds. */
   timeoutMs?: number;
   /**
@@ -65,7 +66,7 @@ interface PlatformErrorBody {
 
 export class ApiClient {
   public readonly baseUrl: string;
-  private readonly apiKey: string;
+  private readonly apiKey?: string;
   private readonly timeoutMs: number;
   private readonly defaultHeaders: Record<string, string>;
   private accountPromise?: Promise<MeResponse>;
@@ -107,7 +108,8 @@ export class ApiClient {
 
     const headers: Record<string, string> = {
       Accept: 'application/json',
-      'X-API-Key': this.apiKey,
+      // A client with no key talks to the public endpoints only.
+      ...(this.apiKey ? { 'X-API-Key': this.apiKey } : {}),
       ...this.defaultHeaders,
       ...(options.headers ?? {}),
     };
