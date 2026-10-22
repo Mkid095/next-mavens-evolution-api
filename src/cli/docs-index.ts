@@ -304,6 +304,7 @@ export const DOC_INDEX: DocIndexEntry[] = [
     description: 'The same platform from a terminal: projects, instances, messages, keys, webhooks, MCP config, docs.',
     topics: [
       'Install',
+      'Update the CLI',
       'Read the documentation from the terminal',
       'Log in',
       'Configuration',

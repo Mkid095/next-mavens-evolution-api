@@ -14,6 +14,7 @@ import { registerKeysCommand, registerProjectKeysCommand } from './commands/keys
 import { registerMcpCommand } from './commands/mcp';
 import { registerMessagesCommand } from './commands/messages';
 import { registerProjectsCommand } from './commands/projects';
+import { registerUpdateCommand } from './commands/update';
 import { registerWebhooksCommand } from './commands/webhooks';
 import { addCommonOptions } from './options';
 
@@ -94,6 +95,7 @@ Configuration:
   registerWebhooksCommand(program);
   registerMcpCommand(program);
   registerDocsCommand(program);
+  registerUpdateCommand(program);
 
   return program;
 }
