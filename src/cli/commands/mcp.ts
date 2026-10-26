@@ -78,10 +78,14 @@ export function registerMcpCommand(program: Command): void {
 
       // The standard MCP transport (Streamable HTTP) — a stock MCP client
       // speaks initialize → tools/list → tools/call straight to this URL.
+      // `Authorization: Bearer` is the form every MCP client sends and the
+      // one the dashboard's config shows. `X-API-Key` is read too — the
+      // platform accepts either — but the generated config uses the
+      // standard one so a client that reads the config gets what it expects.
       const httpServer = {
         type: 'http',
         url: mcpBase,
-        headers: { 'X-API-Key': keyValue },
+        headers: { Authorization: `Bearer ${keyValue}` },
       };
 
       // The stdio bridge that ships with this CLI — for clients that cannot
@@ -104,7 +108,9 @@ export function registerMcpCommand(program: Command): void {
             implementedBy: 'platform',
             endpoint: mcpBase,
             methods: { jsonRpc: 'POST', notifications: 'GET' },
-            note: 'The standard MCP transport. Point a stock MCP client at this URL with the X-API-Key header.',
+            note:
+              'The standard MCP transport. Point a stock MCP client at this URL with the token in an ' +
+              '"Authorization: Bearer <key>" header. "X-API-Key: <key>" is read as well.',
           },
           stdioBridge: {
             implementedBy: 'this CLI',
@@ -131,14 +137,23 @@ export function registerMcpCommand(program: Command): void {
         },
         auth: {
           type: 'header',
-          header: 'X-API-Key',
+          header: 'Authorization',
+          scheme: 'Bearer',
           value: keyValue,
+          alsoAccepted: {
+            header: 'X-API-Key',
+            value: keyValue,
+          },
         },
         example: {
           method: 'POST',
-          url: `${mcpBase}/invoke`,
-          headers: { 'Content-Type': 'application/json', 'X-API-Key': keyValue },
-          body: { tool: 'list_instances', parameters: {} },
+          url: `${mcpBase}`,
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json, text/event-stream',
+            Authorization: `Bearer ${keyValue}`,
+          },
+          body: { jsonrpc: '2.0', id: 1, method: 'tools/list' },
         },
       };
 

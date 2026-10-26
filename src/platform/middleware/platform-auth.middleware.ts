@@ -2,6 +2,7 @@ import { Logger } from '@config/logger.config';
 import { NextFunction, Request, Response } from 'express';
 
 import { PlatformAuthService } from '../services/platform-auth.service';
+import { bearerChallenge, readApiKey } from '../services/request-credential';
 
 /**
  * Platform Auth Middleware
@@ -27,10 +28,13 @@ export class PlatformAuthMiddleware {
       return;
     }
 
-    const apiKey = req.headers['x-api-key'] as string | undefined;
+    const apiKey = readApiKey(req);
 
     if (!apiKey) {
-      res.status(401).json({ error: 'MISSING_API_KEY', message: 'X-API-Key header is required' });
+      res.status(401).set('WWW-Authenticate', bearerChallenge()).json({
+        error: 'MISSING_API_KEY',
+        message: 'An API key is required — send it as "X-API-Key: <key>" or "Authorization: Bearer <key>"',
+      });
       return;
     }
 
@@ -38,7 +42,10 @@ export class PlatformAuthMiddleware {
       const keyInfo = await this.authService.validateApiKey(apiKey);
 
       if (!keyInfo) {
-        res.status(401).json({ error: 'INVALID_API_KEY', message: 'API key is invalid or expired' });
+        res
+          .status(401)
+          .set('WWW-Authenticate', bearerChallenge())
+          .json({ error: 'INVALID_API_KEY', message: 'API key is invalid or expired' });
         return;
       }
 
@@ -65,7 +72,7 @@ export class PlatformAuthMiddleware {
    * Optional auth - sets platformKey if present, but doesn't require it.
    */
   public optionalAuth = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const apiKey = req.headers['x-api-key'] as string | undefined;
+    const apiKey = readApiKey(req);
 
     if (!apiKey) {
       next();

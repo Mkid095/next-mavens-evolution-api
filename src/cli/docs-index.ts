@@ -338,6 +338,7 @@ export const DOC_INDEX: DocIndexEntry[] = [
     description: 'Point Claude Desktop, Cursor or any MCP client at the platform.',
     topics: [
       'Over HTTP (recommended)',
+      'Why a token and not a sign-in',
       'Over stdio',
       'Get the credential',
       'Check that it works',

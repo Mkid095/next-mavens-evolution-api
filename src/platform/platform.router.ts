@@ -31,6 +31,7 @@ import { projectRoutes } from './routes/project.routes';
 import { createSseRouter } from './routes/sse.routes';
 import { webhookRoutes } from './routes/webhook.routes';
 import { AuditService } from './services/audit.service';
+import { discoveryResponse } from './services/oauth-discovery';
 import { projectService } from './services/project.service';
 import { resolveRequestProject } from './services/request-project';
 import { PlatformTenant } from './types/platform-tenant';
@@ -204,6 +205,30 @@ router.use('/platform/activity', hybridAuth(getSessionService()), tenantResolveM
 // public docs site — so the CLI and any integrator can pull the full
 // reference without a credential.
 router.use('/platform/docs', docsRoutes);
+
+/*
+ * OAuth discovery.
+ *
+ * A client that is not sure how to authenticate looks for this before it
+ * gives up. It must be reachable WITHOUT a credential — asking how to
+ * authenticate is what you do before you have a token.
+ *
+ * It is served under the platform mount and under the MCP path, because
+ * a client may probe either the host root (the dashboard serves that
+ * one) or the path-scoped form relative to the MCP URL it was given.
+ */
+router.use((req, _res, next) => {
+  const path = req.path.toLowerCase();
+  if (
+    path.includes('/.well-known/') ||
+    /\/(oauth-protected-resource|oauth-authorization-server|openid-configuration)\/?$/.test(path)
+  ) {
+    const { status, body } = discoveryResponse(req, req.path);
+    _res.status(status).set('Cache-Control', 'no-store').json(body);
+    return;
+  }
+  next();
+});
 
 /**
  * Web console routes — session auth + API key auth.

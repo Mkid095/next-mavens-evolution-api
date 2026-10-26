@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
 
+import { bearerChallenge, readApiKey } from '../services/request-credential';
 import { SessionService } from '../services/session.service';
 import { platformAuthMiddleware } from './platform-auth.middleware';
 
@@ -17,7 +18,9 @@ import { platformAuthMiddleware } from './platform-auth.middleware';
  */
 export function hybridAuth(sessionService: SessionService) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const apiKey = req.headers['x-api-key'] as string | undefined;
+    // X-API-Key, or the standard Authorization: Bearer — both carry the
+    // same API key. An MCP client only sends the second.
+    const apiKey = readApiKey(req);
     const sessionId = (() => {
       const h = req.headers.cookie;
       if (!h) return undefined;
@@ -33,7 +36,10 @@ export function hybridAuth(sessionService: SessionService) {
       // Use session auth — resolve session and set req.platformKey equivalent
       const session = await sessionService.validateSession(sessionId);
       if (!session) {
-        res.status(401).json({ error: 'SESSION_EXPIRED', message: 'Session expired or invalid' });
+        res
+          .status(401)
+          .set('WWW-Authenticate', bearerChallenge())
+          .json({ error: 'SESSION_EXPIRED', message: 'Session expired or invalid' });
         return;
       }
 
@@ -59,6 +65,12 @@ export function hybridAuth(sessionService: SessionService) {
       return next();
     }
 
-    res.status(401).json({ error: 'UNAUTHORIZED', message: 'X-API-Key or session cookie required' });
+    // Name the scheme. Without it a client has to guess what this server
+    // wants, and some guess OAuth — then go looking for a discovery
+    // document that does not exist.
+    res.status(401).set('WWW-Authenticate', bearerChallenge()).json({
+      error: 'UNAUTHORIZED',
+      message: 'An API key is required — send it as "X-API-Key: <key>" or "Authorization: Bearer <key>"',
+    });
   };
 }
