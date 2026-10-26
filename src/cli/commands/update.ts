@@ -113,9 +113,44 @@ async function fetchLatestVersion(registry: string, name: string): Promise<strin
   return packument?.['dist-tags']?.latest ?? null;
 }
 
-/** The npm executable, for the platform. */
-function npmCommand(): string {
-  return process.platform === 'win32' ? 'npm.cmd' : 'npm';
+/**
+ * Quote a value for a Windows command line.
+ *
+ * The Windows spawn path runs through cmd.exe, so the values have to be
+ * quoted there. Doubling the embedded double quotes is the cmd
+ * convention for a literal quote.
+ */
+function quoteForCmd(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Install the package globally with npm.
+ *
+ * Windows is the hard case. Since the CVE-2024-27980 hardening
+ * (Node 18.20.2 / 20.12.2 / 21.7.3 and everything on 22 and later) a
+ * process cannot spawn a `.cmd` or `.bat` file without a shell:
+ * `spawnSync('npm.cmd', args)` throws EINVAL on every currently
+ * supported Node. It worked on macOS and Linux, which is how a self-updater
+ * that only ever got tested on a Mac could ship broken on Windows.
+ *
+ * So on Windows the command line is run through cmd.exe as a single
+ * string. An args array with `shell: true` would work too, but Node
+ * warns about it (DEP0190) because it re-parses the command, and the
+ * warning is noise in a command that is supposed to look clean.
+ *
+ * Everywhere else the array form is used, with no shell — so nothing is
+ * re-parsed and the arguments reach npm exactly as given.
+ */
+function npmInstallGlobal(pkg: string, version: string, registry: string) {
+  const args = ['install', '-g', `${pkg}@${version}`, '--registry', registry];
+
+  if (process.platform === 'win32') {
+    const line = `npm.cmd install -g ${quoteForCmd(`${pkg}@${version}`)} --registry ${quoteForCmd(registry)}`;
+    return spawnSync(line, { stdio: 'inherit', encoding: 'utf8', shell: true });
+  }
+
+  return spawnSync('npm', args, { stdio: 'inherit', encoding: 'utf8' });
 }
 
 export function registerUpdateCommand(program: Command): void {
@@ -123,7 +158,10 @@ export function registerUpdateCommand(program: Command): void {
     .command('update')
     .description('Update the viventure CLI to the latest version')
     .option('--check', 'Only report whether an update is available')
-    .option('--version <version>', 'Update to this version instead of the latest')
+    // `--to`, not `--version`: the root's `-v, --version` is a global flag
+    // and commander routes it there, so a subcommand option of the same
+    // name would silently print the version and exit instead of updating.
+    .option('--to <version>', 'Update to this version instead of the latest')
     .option('--registry <url>', 'The registry to update from')
     .addHelpText(
       'after',
@@ -131,12 +169,13 @@ export function registerUpdateCommand(program: Command): void {
 Examples:
   $ viventure update              update to the latest version
   $ viventure update --check      report whether an update is available
-  $ viventure update --version 1.0.1
+  $ viventure update --to 1.0.1   update to a particular version
 
 The registry is the one the package was published to, so the reader
-never has to name it.`,
+never has to name it. To install by hand:
+  npm install -g @viventure/cli@latest --registry https://registry.nextmavens.com`,
     )
-    .action(async (options: { check?: boolean; version?: string; registry?: string }, command: Command) => {
+    .action(async (options: { check?: boolean; to?: string; registry?: string }, command: Command) => {
       const ctx = new CliContext(globalOptions(command));
       const installed = findInstalledPackage();
 
@@ -166,7 +205,7 @@ never has to name it.`,
         );
       }
 
-      const target = options.version ?? latest;
+      const target = options.to ?? latest;
       const comparison = compareVersions(installed.version, target);
 
       // ── Only report ──────────────────────────────────────────────────────
@@ -200,7 +239,8 @@ never has to name it.`,
           [
             `The latest published version is ${target}.`,
             'Update the checkout: git pull && npm run build',
-            `Or install the published CLI: npm install -g ${PACKAGE_NAME} --registry ${registry}`,
+            'Or install the published CLI:',
+            `  npm install -g ${PACKAGE_NAME}@${target} --registry ${registry}`,
           ],
         );
       }
@@ -208,21 +248,20 @@ never has to name it.`,
       // ── Install it ───────────────────────────────────────────────────────
       ctx.printer.info(dim(`Updating ${name} ${installed.version} → ${target} from ${registry}…`));
 
-      const result = spawnSync(npmCommand(), ['install', '-g', `${name}@${target}`, '--registry', registry], {
-        stdio: 'inherit',
-        encoding: 'utf8',
-      });
+      const result = npmInstallGlobal(name, target, registry);
 
       if (result.error) {
         throw toCliError(new Error(`Could not run npm: ${result.error.message}`), ctx.config.apiUrl, [
-          'Install Node.js and npm, or update by hand: npm install -g ' + name,
+          'Install Node.js and npm, or update by hand:',
+          `  npm install -g ${name}@${target} --registry ${registry}`,
         ]);
       }
 
       if (result.status !== 0) {
         throw toCliError(new Error(`npm exited with code ${result.status}.`), ctx.config.apiUrl, [
           'A global install may need elevated permissions:',
-          `  sudo npm install -g ${name}@${target} --registry ${registry}`,
+          `  npm install -g ${name}@${target} --registry ${registry}`,
+          '(On Windows, run that in an elevated PowerShell.)',
         ]);
       }
 
