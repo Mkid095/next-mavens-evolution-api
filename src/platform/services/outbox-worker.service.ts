@@ -53,6 +53,14 @@ export interface OutboxWorkerOptions {
   repository?: PlatformRepository;
   /** Transport (defaults to the Evolution adapter). */
   sender?: OutboxSender;
+  /**
+   * Usage recorder (defaults to the real one).
+   *
+   * Injected for the same reason as the repository: the usage service
+   * reaches the database, and a test that fakes everything else must not
+   * quietly write to the real one.
+   */
+  usageRecorder?: (cmd: { accountId: string; projectId: string; messageId: string }) => Promise<void>;
 }
 
 /** Shape of the rows we read from PlatformMessageCommand. */
@@ -114,6 +122,9 @@ export class OutboxWorkerService {
   private readonly pacer: OutboxPacer;
   private readonly sender: OutboxSender;
 
+  /** Records the usage a sent message counts towards the account's quota. */
+  private readonly usageRecorder: (cmd: { accountId: string; projectId: string; messageId: string }) => Promise<void>;
+
   private running = false;
   /** Set by stop() — breaks an in-flight cycle immediately. */
   private stopped = false;
@@ -171,6 +182,19 @@ export class OutboxWorkerService {
         });
       },
     };
+
+    this.usageRecorder =
+      options.usageRecorder ??
+      (async (cmd) => {
+        const periodStart = new Date();
+        periodStart.setDate(1);
+        periodStart.setHours(0, 0, 0, 0);
+
+        // Import UsageService here to avoid circular deps
+        const { UsageService } = await import('./usage.service');
+        const usageService = new UsageService();
+        await usageService.recordUsage(cmd.accountId, 'messages', 1, periodStart, cmd.projectId);
+      });
   }
 
   /**
@@ -222,7 +246,13 @@ export class OutboxWorkerService {
 
   private async runCycle(): Promise<void> {
     try {
-      await this.runOnce();
+      /*
+       * The lanes run on their own; the next cycle does not wait for
+       * them. A busy instance must not hold the loop — the whole point
+       * of a lane per instance is that one number with a thousand
+       * messages queued does not slow the others down.
+       */
+      await this.processPending();
     } catch (error) {
       this.logger.error(`Outbox poll error: ${error}`);
     }
@@ -235,11 +265,17 @@ export class OutboxWorkerService {
    * Run a single outbox cycle: pick up queued commands, check them against
    * the anti-ban guard, pace them per instance and send them.
    *
+   * Returns when the cycle is DONE — not when it has been started. That
+   * is what "run once" has to mean for anything that wants to look at
+   * the result afterwards; the polling loop above deliberately does not
+   * wait, and calls `processPending` directly instead.
+   *
    * Public so it can be triggered manually (and unit tested) without
    * running the polling loop.
    */
   public async runOnce(): Promise<void> {
-    await this.processPending();
+    const lanes = await this.processPending();
+    await Promise.all(lanes);
   }
 
   /**
@@ -293,7 +329,7 @@ export class OutboxWorkerService {
    * time per instance, at a controlled interval) and stops the promise
    * that was never made (that a busy instance throttles the others).
    */
-  private async processPending(): Promise<void> {
+  private async processPending(): Promise<Promise<void>[]> {
     this.pruneDeferred();
 
     const active = await this.repository.platformMessageCommand.findMany({
@@ -314,14 +350,19 @@ export class OutboxWorkerService {
     }
 
     // Start a lane for each instance that has work and is not already
-    // being served by one.
+    // being served by one. The promises are returned so that a caller
+    // that wants the cycle to be OVER can wait for them; the polling
+    // loop does not.
+    const started: Promise<void>[] = [];
     for (const instanceId of wanted) {
       const existing = this.lanes.get(instanceId);
       if (existing?.active) continue;
       const lane: InstanceLane = { idle: false, active: true };
       this.lanes.set(instanceId, lane);
-      void this.runLane(instanceId, lane);
+      started.push(this.runLane(instanceId, lane));
     }
+
+    return started;
   }
 
   /**
@@ -610,14 +651,7 @@ export class OutboxWorkerService {
    */
   private async recordUsage(cmd: { accountId: string; projectId: string; messageId: string }): Promise<void> {
     try {
-      const periodStart = new Date();
-      periodStart.setDate(1);
-      periodStart.setHours(0, 0, 0, 0);
-
-      // Import UsageService here to avoid circular deps
-      const { UsageService } = await import('./usage.service');
-      const usageService = new UsageService();
-      await usageService.recordUsage(cmd.accountId, 'messages', 1, periodStart, cmd.projectId);
+      await this.usageRecorder(cmd);
     } catch (error) {
       this.logger.error(`Failed to record usage for MessageCommand ${cmd.messageId}: ${error}`);
     }

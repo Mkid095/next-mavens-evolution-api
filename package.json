@@ -13,7 +13,7 @@
     "start:prod": "node dist/main",
     "cli": "tsx ./src/cli/index.ts",
     "dev:server": "tsx watch ./src/main.ts",
-    "test": "tsx watch ./test/all.test.ts",
+    "test": "tsx --test \"test/**/*.test.ts\"",
     "lint": "eslint --fix --ext .ts src",
     "lint:check": "eslint --ext .ts src",
     "commit": "cz",
