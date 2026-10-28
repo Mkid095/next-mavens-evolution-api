@@ -30,6 +30,7 @@ import {
   InstanceStatus,
   IWhatsAppAdapter,
   LifecycleEvent,
+  MEDIA_TYPES,
   OutgoingMessage,
 } from './whatsapp.adapter';
 
@@ -449,18 +450,59 @@ export class EvolutionAdapter implements IWhatsAppAdapter {
     const instanceName = platformInstance.name;
     const service = waMonitor.waInstances[instanceName];
 
-    if (!service) {
-      throw new Error(`Instance ${instanceName} not connected`);
+    /*
+     * The service object exists as soon as the instance is created — it
+     * is the wrapper, not the socket. Sending through it while the socket
+     * is still coming up fails inside the engine with something like
+     * "Cannot read properties of undefined (reading 'find')", which says
+     * nothing about what is wrong. Check the socket, and say so.
+     */
+    const liveState = (service as { stateConnection?: { state?: string } } | undefined)?.stateConnection?.state;
+    if (!service || liveState !== 'open') {
+      throw new Error(
+        `Instance ${instanceName} is not connected to WhatsApp (${liveState ?? 'no session'}). ` +
+          'Connect it first, or wait for the connection to come up.',
+      );
     }
 
     // Convert E.164 → JID
     const recipientJid = this.phoneToJid(message.to);
 
-    // Call Baileys textMessage
-    const result = await (service as any).textMessage(
-      { number: recipientJid, text: (message.content as any).text ?? '' },
-      true, // isIntegration
-    );
+    /*
+     * The engine has always been able to send media — `mediaMessage`
+     * takes a URL or base64 and a mediatype. The platform never called
+     * it: every message went to `textMessage`, so a media payload was
+     * accepted, stored, and then thrown away in favour of an empty text
+     * body. Route on the type now.
+     */
+    let result: { key?: { id?: string } } | undefined;
+
+    if (message.type === 'text') {
+      result = await (service as any).textMessage(
+        { number: recipientJid, text: (message.content as any).text ?? '' },
+        true, // isIntegration
+      );
+    } else {
+      const media = message.content as {
+        media?: string;
+        caption?: string;
+        fileName?: string;
+        mimeType?: string;
+      };
+
+      if (!media?.media) {
+        throw new Error(`A ${message.type} message needs a media value`);
+      }
+
+      result = await (service as any).mediaMessage({
+        number: recipientJid,
+        media: media.media,
+        mediatype: MEDIA_TYPES[message.type] ?? message.type,
+        caption: media.caption,
+        fileName: media.fileName,
+        mimetype: media.mimeType,
+      } as never);
+    }
 
     // Extract engine message key ID — this is internal only, never exposed in API
     const engineRef = result?.key?.id ?? null;
@@ -523,6 +565,60 @@ export class EvolutionAdapter implements IWhatsAppAdapter {
         lid: jid ? (lidByJid.get(jid) ?? null) : null,
       };
     });
+  }
+
+  /**
+   * Which of these numbers are on WhatsApp.
+   *
+   * A message to a number with no WhatsApp account is accepted by
+   * WhatsApp and never delivered — there is no error to read. A
+   * broadcast has to ask, or it will report success for a number that
+   * does not exist.
+   */
+  async checkNumbersOnWhatsapp(
+    instanceId: string,
+    numbers: string[],
+  ): Promise<{ number: string; onWhatsapp: boolean; name?: string }[]> {
+    const platformInstance = await platformRepository.platformInstance.findUnique({
+      where: { id: instanceId },
+    });
+
+    if (!platformInstance) {
+      throw new Error(`PlatformInstance ${instanceId} not found`);
+    }
+
+    const service = waMonitor.waInstances[platformInstance.name];
+    const liveState = (service as { stateConnection?: { state?: string } } | undefined)?.stateConnection?.state;
+    if (!service || liveState !== 'open') {
+      throw new Error(`Instance ${platformInstance.name} is not connected to WhatsApp (${liveState ?? 'no session'}).`);
+    }
+
+    // The engine answers with a flat list of results, one per number it
+    // recognised: { jid, exists, number, name }.
+    const rows = (await (service as any).whatsappNumber({ numbers })) as {
+      jid?: string;
+      exists?: boolean;
+      number?: string;
+      name?: string;
+    }[];
+
+    // Match on the digits, not on the string: the engine echoes the
+    // number in whatever form it was given, and a caller that wrote
+    // "+254…" must still match a result that says "254…".
+    const digits = (value: string) => String(value ?? '').replace(/\D/g, '');
+
+    const found = new Map<string, { number: string; onWhatsapp: boolean; name?: string }>();
+    for (const row of rows ?? []) {
+      if (!row?.number) continue;
+      found.set(digits(row.number), {
+        number: row.number,
+        onWhatsapp: row.exists === true,
+        ...(row.name ? { name: row.name } : {}),
+      });
+    }
+
+    // A number the engine said nothing about is not on WhatsApp.
+    return numbers.map((number) => found.get(digits(number)) ?? { number, onWhatsapp: false });
   }
 
   async fetchGroups(instanceId: string): Promise<CanonicalGroup[]> {

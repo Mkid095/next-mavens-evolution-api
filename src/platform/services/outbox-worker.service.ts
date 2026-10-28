@@ -3,6 +3,7 @@ import { Logger } from '@config/logger.config';
 
 import { OutgoingMessage } from '../adapters/whatsapp.adapter';
 import { PlatformRepository, platformRepository } from '../repository/platform.repository';
+import { describeError } from './describe-error';
 import { OutboxPacer } from './outbox-pacer';
 import { classifyBlock } from './outbox-policy';
 
@@ -90,6 +91,22 @@ interface MessageCommandRow {
  * On restart, any 'processing' commands are recovered back to 'queued'
  * so no message is ever permanently lost.
  */
+/** One instance's send lane. */
+interface InstanceLane {
+  /** Set when the instance has nothing queued and the lane should stop. */
+  idle: boolean;
+  /**
+   * False once the lane has finished its round.
+   *
+   * A lane removes ITSELF from the map when it stops, rather than being
+   * removed from the outside — so a second lane can never be started for
+   * an instance that still has one running. Two lanes for one instance
+   * would mean two sends at once, which is the burst the pacing exists
+   * to prevent.
+   */
+  active: boolean;
+}
+
 export class OutboxWorkerService {
   private readonly logger = new Logger('OutboxWorkerService');
   private readonly repository: PlatformRepository;
@@ -115,6 +132,8 @@ export class OutboxWorkerService {
   private readonly instanceNames = new Map<string, string>();
   /** commandId → epoch ms before which the command must not be retried. */
   private readonly deferredUntil = new Map<string, number>();
+  /** PlatformInstance.id → its send lane. One lane runs per instance. */
+  private readonly lanes = new Map<string, InstanceLane>();
 
   constructor(options: OutboxWorkerOptions) {
     const platform = configService.get<Platform>('PLATFORM');
@@ -183,13 +202,18 @@ export class OutboxWorkerService {
     }
     // Aborts a pending pacing delay so a shutdown never waits for it.
     this.abortController?.abort();
+    for (const lane of this.lanes.values()) lane.idle = true;
+    this.lanes.clear();
     this.logger.info('Outbox worker stopped');
   }
 
   /**
    * Poll for pending message commands.
-   * The next cycle is scheduled only after the current one finished, so two
-   * cycles can never send concurrently (which would defeat the pacing).
+   *
+   * The cycle only STARTS the work — one lane per instance, each running
+   * on its own. Two cycles can overlap, and so can two lanes, but never
+   * two lanes for the same instance: that is what keeps the pacing
+   * promise.
    */
   private poll(): void {
     if (!this.running) return;
@@ -252,57 +276,142 @@ export class OutboxWorkerService {
    *   3. send through the Evolution adapter,
    *   4. record the send with the anti-ban guard.
    */
+  /**
+   * Find the instances that have something queued, and make sure each of
+   * them has a lane running.
+   *
+   * A LANE PER INSTANCE, not one loop over every command.
+   *
+   * The loop this replaced walked the queue oldest-first across every
+   * instance and awaited each send's pacing slot. That made the whole
+   * worker serial: an instance with five hundred messages queued held the
+   * loop for the better part of twenty minutes, and every other
+   * instance's messages waited behind them — not because of any limit
+   * that applied to them, but because they shared a loop.
+   *
+   * A lane per instance keeps the promise that matters (one message at a
+   * time per instance, at a controlled interval) and stops the promise
+   * that was never made (that a busy instance throttles the others).
+   */
   private async processPending(): Promise<void> {
     this.pruneDeferred();
 
-    const pending = await this.repository.platformMessageCommand.findMany({
+    const active = await this.repository.platformMessageCommand.findMany({
       where: { status: 'queued' },
-      take: this.candidateWindow,
-      orderBy: { createdAt: 'asc' },
+      select: { instanceId: true },
+      distinct: ['instanceId'],
+      orderBy: { instanceId: 'asc' },
     });
 
-    let examined = 0;
+    const wanted = new Set(active.map((row) => row.instanceId));
 
-    for (const cmd of pending) {
-      // Stop as soon as the worker was shut down (the abort signal also
-      // interrupts a pending pacing delay).
-      if (this.stopped) break;
-      // At most `batchSize` anti-ban checks (and therefore sends) per cycle.
-      // Commands that were deferred by the rate limiter do not consume the
-      // budget, so they cannot block the messages behind them.
-      if (examined >= this.batchSize) break;
-
-      // Skip commands the rate limiter deferred in a previous cycle.
-      const retryAt = this.deferredUntil.get(cmd.id);
-      if (retryAt !== undefined) {
-        if (Date.now() < retryAt) continue;
-        this.deferredUntil.delete(cmd.id);
+    // Ask the lanes whose instance has nothing left to send to stop.
+    // They remove themselves; see `InstanceLane.active`.
+    for (const [instanceId, lane] of this.lanes) {
+      if (!wanted.has(instanceId)) {
+        lane.idle = true;
       }
+    }
 
-      const instanceName = await this.resolveInstanceName(cmd.instanceId);
+    // Start a lane for each instance that has work and is not already
+    // being served by one.
+    for (const instanceId of wanted) {
+      const existing = this.lanes.get(instanceId);
+      if (existing?.active) continue;
+      const lane: InstanceLane = { idle: false, active: true };
+      this.lanes.set(instanceId, lane);
+      void this.runLane(instanceId, lane);
+    }
+  }
 
-      // ── Anti-ban guard ────────────────────────────────────────────────
-      examined++;
-      const check = await this.antiBan.canSendMessage(instanceName, cmd.recipient);
+  /**
+   * One instance's send lane.
+   *
+   * It takes that instance's queued commands in order, checks each
+   * against the anti-ban guard, waits for the instance's pacing slot and
+   * sends. It runs on its own, so its waits are its own.
+   */
+  private async runLane(instanceId: string, lane: InstanceLane): Promise<void> {
+    try {
+      let examined = 0;
 
-      if (!check.allowed) {
-        await this.handleBlocked(cmd, instanceName, check);
-        continue;
+      while (!this.stopped && !lane.idle) {
+        // At most `batchSize` anti-ban checks (and therefore sends) per
+        // cycle for this instance. Commands the rate limiter deferred do
+        // not consume the budget, so they cannot block the ones behind
+        // them.
+        if (examined >= this.batchSize) break;
+
+        const pending = await this.repository.platformMessageCommand.findMany({
+          where: { status: 'queued', instanceId },
+          take: this.candidateWindow,
+          orderBy: { createdAt: 'asc' },
+        });
+
+        if (pending.length === 0) {
+          // Nothing left for this instance — the lane goes idle and the
+          // next cycle starts it again if work arrives.
+          lane.idle = true;
+          return;
+        }
+
+        let sentThisRound = false;
+
+        for (const cmd of pending) {
+          if (this.stopped || lane.idle) break;
+          if (examined >= this.batchSize) break;
+
+          // Skip commands the rate limiter deferred in a previous cycle.
+          const retryAt = this.deferredUntil.get(cmd.id);
+          if (retryAt !== undefined) {
+            if (Date.now() < retryAt) continue;
+            this.deferredUntil.delete(cmd.id);
+          }
+
+          const instanceName = await this.resolveInstanceName(cmd.instanceId);
+
+          // ── Anti-ban guard ──────────────────────────────────────────────
+          examined++;
+          const check = await this.antiBan.canSendMessage(instanceName, cmd.recipient);
+
+          if (!check.allowed) {
+            await this.handleBlocked(cmd, instanceName, check);
+            sentThisRound = true;
+            continue;
+          }
+
+          // ── Pacing ──────────────────────────────────────────────────────
+          // This waits for THIS instance's slot. Another instance's lane
+          // is waiting for its own at the same time.
+          const slot = await this.pacer.waitForSlot(instanceName, this.abortController?.signal);
+          if (!slot) {
+            // The worker was stopped while waiting — leave the rest for
+            // the next cycle.
+            lane.idle = true;
+            return;
+          }
+
+          // ── Send ────────────────────────────────────────────────────────
+          const delivered = await this.processCommand(cmd as MessageCommandRow, instanceName);
+
+          if (delivered) {
+            await this.antiBan.recordSend(instanceName, cmd.recipient);
+          }
+          sentThisRound = true;
+        }
+
+        // Nothing in this round could be sent — the instance is waiting
+        // on a rate limit. Leave the rest for the next cycle.
+        if (!sentThisRound) break;
       }
-
-      // ── Pacing ────────────────────────────────────────────────────────
-      const slot = await this.pacer.waitForSlot(instanceName, this.abortController?.signal);
-      if (!slot) {
-        // The worker was stopped while waiting — leave the rest for the
-        // next cycle.
-        break;
-      }
-
-      // ── Send ──────────────────────────────────────────────────────────
-      const delivered = await this.processCommand(cmd as MessageCommandRow, instanceName);
-
-      if (delivered) {
-        await this.antiBan.recordSend(instanceName, cmd.recipient);
+    } catch (error) {
+      this.logger.error(`Outbox lane for instance ${instanceId} failed: ${error}`);
+    } finally {
+      lane.active = false;
+      // Only remove the lane if it is still this one — a newer lane for
+      // the same instance must not be evicted by an older one stopping.
+      if (this.lanes.get(instanceId) === lane) {
+        this.lanes.delete(instanceId);
       }
     }
   }
@@ -432,7 +541,11 @@ export class OutboxWorkerService {
       this.logger.debug(`MessageCommand ${cmd.id} sent: ${result.messageId}`);
       return true;
     } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
+      // The engine throws Boom objects and plain response bodies, not
+      // only Errors. A bare String() renders those as [object Object],
+      // which is what a developer saw in lastError and could do nothing
+      // with.
+      const errorMsg = describeError(error);
 
       // Check if max attempts reached
       const updated = await this.repository.platformMessageCommand.findUnique({

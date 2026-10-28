@@ -3,6 +3,7 @@ import { Logger } from '@config/logger.config';
 import { evolutionAdapter } from '../adapters/evolution.adapter';
 import { OutgoingMessage } from '../adapters/whatsapp.adapter';
 import { platformRepository } from '../repository/platform.repository';
+import { describeError } from './describe-error';
 import { UsageService } from './usage.service';
 
 const MAX_RETRIES = 5;
@@ -61,7 +62,7 @@ export class MessageService {
       await this.recordUsageOnSent(commandId);
     } catch (error) {
       const attempts = command.attempts + 1;
-      const lastError = error instanceof Error ? error.message : String(error);
+      const lastError = describeError(error);
 
       await platformRepository.platformMessageCommand.update({
         where: { id: commandId },

@@ -151,7 +151,16 @@ function readSessionCookie(req: Request): string | undefined {
  */
 async function sendViaPublicApi(
   req: Request,
-  body: { instancePublicId: string; number: string; text: string; type: string },
+  body: {
+    instancePublicId: string;
+    number: string;
+    text?: string;
+    type: string;
+    media?: string;
+    caption?: string;
+    fileName?: string;
+    mimeType?: string;
+  },
 ): Promise<string> {
   const base = (configService.get('PLATFORM').PUBLIC_API_BASE || '').replace(/\/+$/, '');
   if (!base) {
@@ -159,9 +168,18 @@ async function sendViaPublicApi(
   }
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+  // Forward whichever credential the caller used. The platform accepts
+  // either header, and a client that sent `Authorization: Bearer` would
+  // get a 401 from this internal call if only `X-API-Key` were copied.
   const apiKeyHeader = req.headers['x-api-key'];
   const apiKey = Array.isArray(apiKeyHeader) ? apiKeyHeader[0] : apiKeyHeader;
   if (apiKey) headers['X-API-Key'] = apiKey;
+
+  const authorizationHeader = req.headers.authorization;
+  const authorization = Array.isArray(authorizationHeader) ? authorizationHeader[0] : authorizationHeader;
+  if (authorization) headers.Authorization = authorization;
+
   const sessionId = readSessionCookie(req);
   if (sessionId) headers.Cookie = `sessionId=${sessionId}`;
 
@@ -496,15 +514,17 @@ export async function executeTool(
           return fail(-32009, 'Instance not connected', { instanceId, status: instance.status });
         }
 
-        // The platform pipeline delivers text payloads, so the media link is
-        // carried by the message body (caption first, then the URL).
-        const text = caption ? `${caption}\n${url}` : url;
-
+        // The media is sent AS media. It used to be carried in the body of
+        // a text message — the URL, with the caption above it — so what
+        // the recipient got was a link, not the picture. The platform
+        // transmits image, video, document and audio now, so the tool
+        // does too.
         const messageId = await sendViaPublicApi(req, {
           instancePublicId: instance.publicId,
           number: recipient,
-          text,
           type,
+          media: url,
+          ...(caption ? { caption } : {}),
         });
 
         await auditService.record(
@@ -524,6 +544,82 @@ export async function executeTool(
             caption: caption ?? null,
           },
         };
+      }
+
+      case 'get_message_status': {
+        const { instanceId, messageId, state, limit } = params as {
+          instanceId?: string;
+          messageId?: string;
+          state?: string;
+          limit?: number;
+        };
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
+
+        const { messageStatusService } = await import('../services/message-status.service');
+        const accountId = project.accountId;
+
+        // One message.
+        if (messageId) {
+          const message = await messageStatusService.get(accountId, messageId);
+          if (!message) {
+            return fail(-32004, `Unknown message: ${messageId}`);
+          }
+          return { ok: true, data: message };
+        }
+
+        // The whole picture.
+        const instancePublicId = instanceId;
+        if (instancePublicId) {
+          const instance = await resolveInstance(instancePublicId, project.id);
+          if (!instance) {
+            return fail(-32004, 'Instance not found', { instanceId });
+          }
+        }
+
+        const summary = await messageStatusService.summary(accountId, {
+          instancePublicId,
+          since: undefined,
+        });
+        const page = await messageStatusService.list(accountId, {
+          instancePublicId,
+          state: state as never,
+          limit: typeof limit === 'number' ? limit : undefined,
+        });
+
+        return { ok: true, data: { summary, messages: page.messages, nextCursor: page.nextCursor } };
+      }
+
+      case 'check_numbers_on_whatsapp': {
+        const { instanceId, numbers } = params as { instanceId?: string; numbers?: string[] };
+        if (!instanceId || !Array.isArray(numbers) || numbers.length === 0) {
+          return fail(JSONRPC_INVALID_PARAMS, 'instanceId and a non-empty numbers array are required');
+        }
+        const project = await getProject();
+        if (!project) return fail(-32001, 'No project is available for this credential');
+        const instance = await resolveInstance(instanceId, project.id);
+        if (!instance) {
+          return fail(-32004, 'Instance not found', { instanceId });
+        }
+
+        const { evolutionAdapter } = await import('../adapters/evolution.adapter');
+        try {
+          const results = await evolutionAdapter.checkNumbersOnWhatsapp(
+            instance.id,
+            numbers.map((n) => String(n)),
+          );
+          return {
+            ok: true,
+            data: {
+              total: results.length,
+              onWhatsapp: results.filter((r) => r.onWhatsapp).length,
+              notOnWhatsapp: results.filter((r) => !r.onWhatsapp).length,
+              results,
+            },
+          };
+        } catch (error) {
+          return fail(-32006, `Could not check the numbers: ${String(error)}`);
+        }
       }
 
       // ══════════════════════════════════════════════════════

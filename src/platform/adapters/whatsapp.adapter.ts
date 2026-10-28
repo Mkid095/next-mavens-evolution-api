@@ -8,9 +8,43 @@
  * Implementation: EvolutionAdapter (src/platform/adapters/evolution.adapter.ts)
  */
 
+/**
+ * A message on its way out.
+ *
+ * `type` decides which engine call is used:
+ *
+ *   text          → `textMessage`
+ *   image         → `mediaMessage` with mediatype 'image'
+ *   video         → `mediaMessage` with mediatype 'video'
+ *   document      → `mediaMessage` with mediatype 'document'
+ *   audio         → `mediaMessage` with mediatype 'audio'
+ *
+ * The rest are named in the type union because the platform accepted
+ * them for a while and stored them without ever transmitting one. They
+ * are rejected at the API now rather than quietly accepted.
+ */
+export type OutgoingMessageType = 'text' | 'image' | 'video' | 'document' | 'audio';
+
+/** The message types the platform transmits. */
+export const OUTGOING_MESSAGE_TYPES: OutgoingMessageType[] = ['text', 'image', 'video', 'document', 'audio'];
+
+/**
+ * The media types, and the `mediatype` the engine wants for each.
+ *
+ * `image`, `video`, `document` and `audio` are the four the engine's
+ * `mediaMessage` handles. `ptv` exists on the engine but is a WhatsApp
+ * status reel, not something a broadcast wants.
+ */
+export const MEDIA_TYPES: Record<string, string> = {
+  image: 'image',
+  video: 'video',
+  document: 'document',
+  audio: 'audio',
+};
+
 export interface OutgoingMessage {
   to: string; // E.164 phone number
-  type: 'text' | 'media' | 'audio' | 'button' | 'interactive' | 'template';
+  type: OutgoingMessageType;
   content: Record<string, unknown>;
 }
 
@@ -127,6 +161,19 @@ export interface IWhatsAppAdapter {
    * @returns engineRef — engine-specific message key (internal only, not exposed in API)
    */
   sendMessage(instanceId: string, message: OutgoingMessage): Promise<{ messageId: string; engineRef: string | null }>;
+
+  /**
+   * Which of these numbers are on WhatsApp.
+   *
+   * WhatsApp does not refuse a message to a number that has no account —
+   * it accepts it and never delivers it. So "not on WhatsApp" cannot be
+   * read off a failed send; it has to be asked for. The engine checks its
+   * own cache first and only calls WhatsApp for what it does not know.
+   */
+  checkNumbersOnWhatsapp(
+    instanceId: string,
+    numbers: string[],
+  ): Promise<{ number: string; onWhatsapp: boolean; name?: string }[]>;
 
   /**
    * Fetch canonical contacts from engine.

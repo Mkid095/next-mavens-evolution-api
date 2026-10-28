@@ -59,6 +59,9 @@ export const TOOL_SCOPES: Record<string, string[]> = {
   // Messages
   send_message: ['messages:send'],
   send_media: ['messages:send'],
+  // Reading the state of a message and checking numbers are both reads.
+  get_message_status: ['messages:send'],
+  check_numbers_on_whatsapp: ['instances:read'],
   // Webhooks
   list_webhooks: ['webhooks:read'],
   get_webhook: ['webhooks:read'],
@@ -207,17 +210,66 @@ export const MCP_TOOLS: McpTool[] = [
     name: 'send_media',
     category: 'messages',
     description:
-      'Send a media message (image, video, document, audio). The media URL is delivered as part of the message body.',
+      'Send a media message — an image, a video, a document or an audio file. The file is transmitted as media, not as a link in a text message.',
     inputSchema: {
       type: 'object',
       properties: {
         instanceId: { type: 'string', description: 'The public ID of the connected instance' },
         recipient: { type: 'string', description: 'Phone number in E.164 format' },
-        type: { type: 'string', description: 'Media type: image, video, document, audio' },
+        type: {
+          type: 'string',
+          description: 'Media type: image, video, document, audio',
+          enum: ['image', 'video', 'document', 'audio'],
+        },
         url: { type: 'string', description: 'Public URL of the media file' },
         caption: { type: 'string', description: 'Optional caption text' },
+        fileName: { type: 'string', description: 'File name, for a document' },
       },
       required: ['instanceId', 'recipient', 'type', 'url'],
+    },
+  },
+  {
+    name: 'get_message_status',
+    category: 'messages',
+    description:
+      'Read the state of the messages this instance has sent — how many went out, how many are still queued, how many reached the recipient rather than merely leaving the platform, and what the failures were.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        instanceId: {
+          type: 'string',
+          description: 'The public ID of the instance to report on',
+        },
+        messageId: {
+          type: 'string',
+          description: 'A single message id — the state of that one message',
+        },
+        state: {
+          type: 'string',
+          description: 'Only messages in this state: queued, processing, sent, failed, skipped',
+          enum: ['queued', 'processing', 'sent', 'failed', 'skipped'],
+        },
+        limit: { type: 'number', description: 'How many messages to list (default 50)' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'check_numbers_on_whatsapp',
+    category: 'messages',
+    description:
+      'Check whether numbers are on WhatsApp before messaging them. WhatsApp accepts a message to a number with no account and never delivers it, so a send that succeeds is not proof of delivery.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        instanceId: { type: 'string', description: 'The public ID of the connected instance' },
+        numbers: {
+          type: 'array',
+          description: 'The phone numbers to check',
+          items: { type: 'string' },
+        },
+      },
+      required: ['instanceId', 'numbers'],
     },
   },
 
