@@ -23,6 +23,10 @@ services:
         condition: service_healthy
     volumes:
       - platform_instances:/fidscript/instances
+      # The daily backup lands here on the host. Mounted read-only so the
+      # platform can see whether the backup stopped running — a backup that
+      # silently stopped is worse than one that never started.
+      - /home/whatsapp/backups:/home/whatsapp/backups:ro
     networks:
       - platform-net
     healthcheck:

@@ -14,6 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { evolutionAdapter } from '../adapters/evolution.adapter';
 import { platformRepository } from '../repository/platform.repository';
 
 export type HealthState = 'ok' | 'degraded' | 'down';
@@ -123,9 +124,17 @@ export class PlatformStatusService {
     };
 
     try {
-      const instances = await platformRepository.platformInstance.findMany({
-        select: { publicId: true, status: true, phoneNumber: true },
-      });
+      /*
+       * The LIVE socket, not the stored row.
+       *
+       * The row is a copy of the truth, refreshed every 15 seconds. It
+       * is stale after a restart, and it is stale in exactly the moment
+       * that matters: the API comes back up, the row still says
+       * CONNECTED, and the device is actually gone. A monitor that reads
+       * the row says "all fine" over a platform that cannot deliver a
+       * message. The socket cannot lie like that.
+       */
+      const instances = await evolutionAdapter.getLiveInstanceStates();
       const connected = instances.filter((i) => i.status === 'CONNECTED');
       const first = connected[0];
 
@@ -199,9 +208,9 @@ export class PlatformStatusService {
 
       if (usedPercent > 90) {
         problems.push(`The disk is ${usedPercent}% full.`);
-        return { state: 'degraded', freeGb: round(freeGb), usedPercent };
+        return { state: 'degraded', freeGb: roundGb(freeGb), usedPercent };
       }
-      return { state: 'ok', freeGb: round(freeGb), usedPercent };
+      return { state: 'ok', freeGb: roundGb(freeGb), usedPercent };
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       problems.push(`Could not read the disk: ${detail}`);
@@ -218,6 +227,11 @@ export class PlatformStatusService {
   private checkBackup(problems: string[]): PlatformStatus['checks']['backup'] {
     try {
       if (!fs.existsSync(BACKUP_DIR)) {
+        // The platform cannot SEE the backups. That is a different thing
+        // from there being no backups, and it is a problem with this
+        // check, not with the backup — so it says so, rather than
+        // reporting a broken backup it knows nothing about.
+        problems.push('The platform cannot see the backup directory, so it cannot say how old the backup is.');
         return { state: 'degraded', ageHours: null, path: null };
       }
       const files = fs
@@ -238,9 +252,9 @@ export class PlatformStatusService {
       const ageHours = (Date.now() - newest.mtime) / 3_600_000;
       if (ageHours > 26) {
         problems.push(`The last database backup is ${Math.round(ageHours)} hours old.`);
-        return { state: 'degraded', ageHours: round(ageHours), path: newest.full };
+        return { state: 'degraded', ageHours: roundHours(ageHours), path: newest.full };
       }
-      return { state: 'ok', ageHours: round(ageHours), path: newest.full };
+      return { state: 'ok', ageHours: roundHours(ageHours), path: newest.full };
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       problems.push(`Could not read the backup directory: ${detail}`);
@@ -249,8 +263,13 @@ export class PlatformStatusService {
   }
 }
 
-function round(bytes: number): number {
+function roundGb(bytes: number): number {
   return Math.round((bytes / 1024 / 1024 / 1024) * 10) / 10;
+}
+
+/** Hours, to one decimal. */
+function roundHours(hours: number): number {
+  return Math.round(hours * 10) / 10;
 }
 
 export const platformStatusService = new PlatformStatusService();

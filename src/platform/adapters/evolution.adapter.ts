@@ -423,6 +423,47 @@ export class EvolutionAdapter implements IWhatsAppAdapter {
   }
 
   /**
+   * The live connection state of every instance, read from the sockets.
+   *
+   * This READS; it does not reconcile and does not write. The stored row
+   * on the platform instance is a copy of the truth, refreshed every 15
+   * seconds — which means it can be wrong for that long, and after a
+   * restart it is wrong until the first sweep runs. Anything that has to
+   * answer "is the device connected RIGHT NOW" — the status endpoint, the
+   * watchdog — has to ask the socket, not the copy.
+   */
+  async getLiveInstanceStates(): Promise<
+    { publicId: string; name: string; status: InstanceStatus; phoneNumber: string | null }[]
+  > {
+    const instances = await platformRepository.platformInstance.findMany({
+      select: { publicId: true, name: true, phoneNumber: true },
+    });
+
+    // The engine's own rows carry the number a session belongs to; the
+    // JID of the owner is the one that is always there.
+    const engineRows = await platformRepository.instance.findMany({
+      select: { name: true, number: true, ownerJid: true },
+    });
+    const engineByName = new Map(engineRows.map((row) => [row.name, row]));
+
+    return instances.map((instance) => {
+      const live = waMonitor.waInstances[instance.name];
+      const liveState = (live as { stateConnection?: { state?: string } } | undefined)?.stateConnection?.state;
+
+      let status: InstanceStatus;
+      if (liveState === 'open') status = 'CONNECTED';
+      else if (liveState === 'connecting') status = 'CONNECTING';
+      else status = 'DISCONNECTED';
+
+      const engine = engineByName.get(instance.name);
+      const ownerJid = engine?.ownerJid ?? null;
+      const phoneNumber = engine?.number ?? (ownerJid ? jidToPhone(ownerJid) : null) ?? instance.phoneNumber;
+
+      return { publicId: instance.publicId, name: instance.name, status, phoneNumber };
+    });
+  }
+
+  /**
    * Get the most recent QR for an instance, if available.
    * Reads from the in-memory cache (populated by SSE / direct event
    * capture). Returns null if no QR has been emitted yet.
