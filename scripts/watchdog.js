@@ -26,6 +26,45 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 
+/**
+ * The alert settings live in a file, not in the repository.
+ *
+ * A webhook URL is a secret — it lets anybody post to your channel —
+ * and the repository is public. So the file sits outside it, and this
+ * script reads it if it is there.
+ *
+ * The file is plain KEY=VALUE lines, one per line, `#` for comments.
+ */
+const SETTINGS_FILE = process.env.VIVENTURE_WATCHDOG_ENV || '/home/whatsapp/.viventure-watchdog.env';
+
+function loadSettings(file) {
+  let raw;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch {
+    return false;
+  }
+
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    // Strip the quotes people put around a URL.
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    // The environment wins over the file: an operator can override for
+    // one run without editing anything.
+    if (process.env[key] === undefined) process.env[key] = value;
+  }
+  return true;
+}
+
+const settingsLoaded = loadSettings(SETTINGS_FILE);
+
 const STATUS_URL = process.env.VIVENTURE_STATUS_URL || 'https://whatsapp.nextmavens.com/api/v1/platform/status';
 const WEBHOOK = process.env.VIVENTURE_ALERT_WEBHOOK || '';
 const SMTP_HOST = process.env.VIVENTURE_SMTP_HOST || '';
@@ -46,6 +85,27 @@ function log(message) {
   } catch {
     /* a log that cannot be written is not worth crashing over */
   }
+}
+
+/**
+ * Say, once, where the alerts would go — and say it when they would
+ * go NOWHERE, because a watchdog with no channel is a watchdog that
+ * tells nobody.
+ */
+function reportChannel() {
+  if (WEBHOOK) {
+    log(`alerts go to the webhook (${new URL(WEBHOOK).host})`);
+    return;
+  }
+  if (SMTP_HOST && ALERT_TO) {
+    log(`alerts go by email to ${ALERT_TO} via ${SMTP_HOST}`);
+    return;
+  }
+
+  log(
+    `NO ALERT CHANNEL — the watchdog can only write to the log. ` +
+      `Put VIVENTURE_ALERT_WEBHOOK (or the SMTP_* variables) in ${SETTINGS_FILE}.`,
+  );
 }
 
 function readState() {
@@ -251,6 +311,18 @@ async function main() {
   const summary = describe(status);
   const previous = readState();
   const state = status?.state ?? 'down';
+  const hasChannel = Boolean(WEBHOOK || (SMTP_HOST && ALERT_TO));
+
+  /*
+   * A watchdog with nowhere to send its alerts is a watchdog that tells
+   * nobody, and it looks exactly like a watchdog that has nothing to
+   * report. Say so — once an hour, so it is visible without drowning
+   * the log.
+   */
+  const lastComplaint = previous?.channelReportedAt ? Date.parse(previous.channelReportedAt) : 0;
+  if (!hasChannel && Date.now() - lastComplaint > 3_600_000) {
+    reportChannel();
+  }
 
   writeState({
     checkedAt: new Date().toISOString(),
@@ -258,6 +330,7 @@ async function main() {
     reachable,
     problems: status?.problems ?? [],
     checks: status?.checks ?? null,
+    channelReportedAt: hasChannel ? null : new Date().toISOString(),
   });
 
   // Alert on a CHANGE, and on the first run, and whenever the platform
@@ -277,7 +350,12 @@ async function main() {
 
   const webhookOk = await postWebhook(summary, status);
   const emailOk = await sendEmail(summary, status);
-  log(`alert sent (webhook: ${webhookOk ? 'yes' : 'no'}, email: ${emailOk ? 'yes' : 'no'})`);
+
+  if (!webhookOk && !emailOk) {
+    log('NO ALERT CHANNEL — nothing was sent. The watchdog can only write to the log.');
+  } else {
+    log(`alert sent (webhook: ${webhookOk ? 'yes' : 'no'}, email: ${emailOk ? 'yes' : 'no'})`);
+  }
 }
 
 main().catch((error) => {
