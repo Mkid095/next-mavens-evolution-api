@@ -66,6 +66,27 @@ export function describeError(error: unknown): string {
     return asMessage.trim();
   }
 
+  /*
+   * The engine's exceptions carry their message as an ARRAY — the
+   * exception constructor takes `...objectError` and puts the arguments
+   * in `message`. The sentence explaining what went wrong ("the number
+   * is not on WhatsApp") was in there all along, but reading only a
+   * string message missed it, and the error was reported as the
+   * useless "Bad Request".
+   */
+  if (Array.isArray(asMessage)) {
+    const parts = asMessage
+      .map((part) => (typeof part === 'string' ? part.trim() : describeError(part)))
+      .filter((part) => part && part !== 'no error detail' && !/^unknown error$/.test(part));
+    if (parts.length) return parts.join(' — ');
+  }
+
+  // A message that is an object — the engine's own lookup result.
+  if (asMessage && typeof asMessage === 'object') {
+    const described = describeCause(asMessage);
+    if (described) return described;
+  }
+
   // Baileys and friends often throw the response body itself.
   for (const key of ['error', 'reason', 'status', 'code'] as const) {
     const value = (error as Record<string, unknown>)[key];

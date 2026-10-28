@@ -30,6 +30,70 @@ async function initWA() {
   await waMonitor.loadInstance();
 }
 
+/**
+ * Give a thrown error a truthful name and a truthful status.
+ *
+ * The handler used to default every error that had no `error` of its
+ * own to "Internal Server Error" — including the ones that were
+ * entirely the client's fault. A request with a malformed JSON body
+ * came back as `400 {"error":"Internal Server Error"}`, which tells a
+ * developer their JSON was fine and the server broke. It was neither.
+ *
+ * The name is now derived from what actually went wrong: the body
+ * parser's own type when there is one, the status otherwise.
+ */
+function shapeError(err: Error): { status: number; error: string; message: string } {
+  const any = err as any;
+  const status = Number(any?.status ?? any?.statusCode ?? 500) || 500;
+
+  const rawMessage = typeof any?.message === 'string' ? any.message.trim() : '';
+  const type = typeof any?.type === 'string' ? any.type : '';
+
+  // The body parser's own errors.
+  if (type === 'entity.parse.failed') {
+    return {
+      status,
+      error: 'Malformed JSON',
+      message: `The request body is not valid JSON${rawMessage ? `: ${rawMessage}` : '.'}`,
+    };
+  }
+  if (type === 'entity.too.large') {
+    return { status, error: 'Payload Too Large', message: rawMessage || 'The request body is too large.' };
+  }
+  if (type === 'charset.unsupported' || type === 'encoding.unsupported') {
+    return {
+      status,
+      error: 'Unsupported Encoding',
+      message: rawMessage || 'The request body is not encoded in a supported way.',
+    };
+  }
+
+  // An error that names itself.
+  if (typeof any?.error === 'string' && any.error.trim()) {
+    return { status, error: any.error.trim(), message: rawMessage || any.error.trim() };
+  }
+
+  // A status without a name: name it after the status.
+  const named: Record<number, string> = {
+    400: 'Bad Request',
+    401: 'Unauthorized',
+    403: 'Forbidden',
+    404: 'Not Found',
+    405: 'Method Not Allowed',
+    409: 'Conflict',
+    413: 'Payload Too Large',
+    415: 'Unsupported Media Type',
+    422: 'Unprocessable Entity',
+    429: 'Too Many Requests',
+  };
+
+  return {
+    status,
+    error: named[status] ?? (status >= 500 ? 'Internal Server Error' : 'Request Failed'),
+    message: rawMessage || named[status] || 'The request could not be handled.',
+  };
+}
+
 async function bootstrap() {
   const logger = new Logger('SERVER');
   const app = express();
@@ -76,6 +140,7 @@ async function bootstrap() {
   app.use(
     (err: Error, req: Request, res: Response, next: NextFunction) => {
       if (err) {
+        const shaped = shapeError(err);
         const webhook = configService.get<Webhook>('WEBHOOK');
 
         if (webhook.EVENTS.ERRORS_WEBHOOK && webhook.EVENTS.ERRORS_WEBHOOK != '' && webhook.EVENTS.ERRORS) {
@@ -88,11 +153,11 @@ async function bootstrap() {
           const errorData = {
             event: 'error',
             data: {
-              error: err['error'] || 'Internal Server Error',
-              message: err['message'] || 'Internal Server Error',
-              status: err['status'] || 500,
+              error: shaped.error,
+              message: shaped.message,
+              status: shaped.status,
               response: {
-                message: err['message'] || 'Internal Server Error',
+                message: shaped.message,
               },
             },
             date_time: now,
@@ -108,11 +173,11 @@ async function bootstrap() {
           httpService.post('', errorData);
         }
 
-        return res.status(err['status'] || 500).json({
-          status: err['status'] || 500,
-          error: err['error'] || 'Internal Server Error',
+        return res.status(shaped.status).json({
+          status: shaped.status,
+          error: shaped.error,
           response: {
-            message: err['message'] || 'Internal Server Error',
+            message: shaped.message,
           },
         });
       }

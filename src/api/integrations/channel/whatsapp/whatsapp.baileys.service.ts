@@ -57,6 +57,7 @@ import {
   StatusMessage,
   TypeButton,
 } from '@api/dto/sendMessage.dto';
+import { notOnWhatsapp } from '@api/integrations/channel/whatsapp/notOnWhatsapp';
 import * as s3Service from '@api/integrations/storage/s3/libs/minio.server';
 import { ProviderFiles } from '@api/provider/sessions';
 import { PrismaRepository, Query } from '@api/repository/repository.service';
@@ -1887,7 +1888,7 @@ export class BaileysStartupService extends ChannelStartupService {
     const onWhatsapp = (await this.whatsappNumber({ numbers: [jid] }))?.shift();
 
     if (!onWhatsapp.exists) {
-      throw new BadRequestException(onWhatsapp);
+      throw new BadRequestException(notOnWhatsapp(number ?? jid));
     }
 
     try {
@@ -2107,7 +2108,7 @@ export class BaileysStartupService extends ChannelStartupService {
     const isWA = (await this.whatsappNumber({ numbers: [number] }))?.shift();
 
     if (!isWA.exists && !isJidGroup(isWA.jid) && !isWA.jid.includes('@broadcast')) {
-      throw new BadRequestException(isWA);
+      throw new BadRequestException(notOnWhatsapp(number));
     }
 
     const sender = isWA.jid.toLowerCase();
@@ -2363,7 +2364,7 @@ export class BaileysStartupService extends ChannelStartupService {
       const isWA = (await this.whatsappNumber({ numbers: [number] }))?.shift();
 
       if (!isWA.exists && !isJidGroup(isWA.jid) && !isWA.jid.includes('@broadcast')) {
-        throw new BadRequestException(isWA);
+        throw new BadRequestException(notOnWhatsapp(number));
       }
 
       const sender = isWA.jid;
@@ -4141,7 +4142,7 @@ export class BaileysStartupService extends ChannelStartupService {
       const isWA = (await this.whatsappNumber({ numbers: [number] }))?.shift();
 
       if (!isWA.exists && !isJidGroup(isWA.jid) && !isWA.jid.includes('@broadcast')) {
-        throw new BadRequestException(isWA);
+        throw new BadRequestException(notOnWhatsapp(number));
       }
 
       const sender = isWA.jid;
@@ -4902,7 +4903,7 @@ export class BaileysStartupService extends ChannelStartupService {
     const onWhatsapp = (await this.whatsappNumber({ numbers: [jid] }))?.shift();
 
     if (!onWhatsapp.exists) {
-      throw new BadRequestException(onWhatsapp);
+      throw new BadRequestException(notOnWhatsapp(data.number ?? jid));
     }
 
     try {
@@ -4971,7 +4972,7 @@ export class BaileysStartupService extends ChannelStartupService {
     const onWhatsapp = (await this.whatsappNumber({ numbers: [jid] }))?.shift();
 
     if (!onWhatsapp.exists) {
-      throw new BadRequestException(onWhatsapp);
+      throw new BadRequestException(notOnWhatsapp(data.number ?? jid));
     }
 
     try {
