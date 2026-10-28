@@ -154,10 +154,19 @@ export const API_CATALOGUE: ApiEndpoint[] = [
       },
     ],
     responses: [
+      {
+        status: '200',
+        description: 'The same Idempotency-Key was sent again with the same body; the first answer is replayed',
+      },
       { status: '201', description: 'The token and its plaintext, shown only once' },
       { status: '400', description: 'A requested scope is not one the platform knows' },
       { status: '401', description: 'Missing or invalid credential' },
       { status: '403', description: 'The account belongs to another tenant, or a wildcard token needs an admin' },
+      {
+        status: '409',
+        description:
+          'The Idempotency-Key was already used with a different body, or a request with that key is still being processed',
+      },
       { status: '500', description: 'The token could not be created' },
     ],
     docs: 'api-keys',
@@ -283,10 +292,19 @@ export const API_CATALOGUE: ApiEndpoint[] = [
       { name: 'description', type: 'string', required: false, description: 'What the project is for' },
     ],
     responses: [
+      {
+        status: '200',
+        description: 'The same Idempotency-Key was sent again with the same body; the first answer is replayed',
+      },
       { status: '201', description: 'The new project' },
       { status: '400', description: 'The name was missing or too short' },
       { status: '401', description: 'Missing or invalid API key' },
       { status: '403', description: 'The account belongs to another tenant' },
+      {
+        status: '409',
+        description:
+          'The Idempotency-Key was already used with a different body, or a request with that key is still being processed',
+      },
       { status: '500', description: 'The project could not be created' },
     ],
     docs: 'projects',
@@ -422,11 +440,20 @@ export const API_CATALOGUE: ApiEndpoint[] = [
       },
     ],
     responses: [
+      {
+        status: '200',
+        description: 'The same Idempotency-Key was sent again with the same body; the first answer is replayed',
+      },
       { status: '201', description: 'The key and its plaintext, shown only once' },
       { status: '400', description: 'A requested scope is not one the platform knows' },
       { status: '401', description: 'Missing or invalid credential' },
       { status: '403', description: 'The project does not belong to the caller, or a wildcard key needs an admin' },
       { status: '404', description: 'No such project on this account' },
+      {
+        status: '409',
+        description:
+          'The Idempotency-Key was already used with a different body, or a request with that key is still being processed',
+      },
       { status: '500', description: 'The key could not be created' },
     ],
     docs: 'api-keys',
@@ -722,12 +749,20 @@ export const API_CATALOGUE: ApiEndpoint[] = [
     ],
     body: [{ name: 'name', type: 'string', required: true, description: 'Name of the instance, unique per account' }],
     responses: [
+      {
+        status: '200',
+        description:
+          'An instance with that name already existed in this project, or the same Idempotency-Key was sent again with the same body and the first answer is replayed',
+      },
       { status: '201', description: 'The new instance' },
-      { status: '200', description: 'An instance with that name already existed in this project' },
       { status: '400', description: 'The name was missing' },
       { status: '401', description: 'Missing or invalid credential' },
       { status: '403', description: 'The project does not belong to the caller' },
-      { status: '409', description: 'The name is taken by an instance in another project' },
+      {
+        status: '409',
+        description:
+          'The name is taken by an instance in another project, or the Idempotency-Key was already used with a different body',
+      },
       { status: '500', description: 'The instance could not be created' },
     ],
     docs: 'instances',
@@ -1233,11 +1268,20 @@ export const API_CATALOGUE: ApiEndpoint[] = [
       },
     ],
     responses: [
+      {
+        status: '200',
+        description: 'The same Idempotency-Key was sent again with the same body; the first answer is replayed',
+      },
       { status: '201', description: 'The webhook and its plaintext secret, shown only once' },
       { status: '400', description: 'The instance id or the url was missing, or the instance is not on this project' },
       { status: '401', description: 'Missing or invalid credential' },
       { status: '403', description: 'The project does not belong to the caller' },
       { status: '404', description: 'No such project on this account' },
+      {
+        status: '409',
+        description:
+          'The Idempotency-Key was already used with a different body, or a request with that key is still being processed',
+      },
       { status: '500', description: 'The webhook could not be created' },
     ],
     docs: 'webhooks',
@@ -1498,11 +1542,20 @@ export const API_CATALOGUE: ApiEndpoint[] = [
       { name: 'type', type: 'string', required: false, description: 'The kind of message. Defaults to text' },
     ],
     responses: [
+      {
+        status: '200',
+        description: 'The same Idempotency-Key was sent again with the same body; the first answer is replayed',
+      },
       { status: '202', description: 'The message was queued; the message id is returned' },
       { status: '400', description: 'The number or the text was missing' },
       { status: '401', description: 'Missing or invalid credential' },
       { status: '403', description: 'The key is scoped to a different project' },
       { status: '404', description: 'No such instance, or the engine row is missing' },
+      {
+        status: '409',
+        description:
+          'The Idempotency-Key was already used with a different body, or a request with that key is still being processed',
+      },
       { status: '500', description: 'The message could not be queued' },
     ],
     docs: 'messages',
@@ -1654,11 +1707,20 @@ export const API_CATALOGUE: ApiEndpoint[] = [
       { name: 'mimeType', type: 'string', required: false, description: 'The MIME type of the file' },
     ],
     responses: [
+      {
+        status: '200',
+        description: 'The same Idempotency-Key was sent again with the same body; the first answer is replayed',
+      },
       { status: '202', description: 'The message was queued; the message id is returned' },
       { status: '400', description: 'A field was missing, or the message type is not one the platform sends' },
       { status: '401', description: 'Missing or invalid credential' },
       { status: '403', description: 'The key is scoped to a different project' },
       { status: '404', description: 'No such instance on this account' },
+      {
+        status: '409',
+        description:
+          'The Idempotency-Key was already used with a different body, or a request with that key is still being processed',
+      },
       { status: '429', description: 'The account rate limit was exceeded' },
       { status: '500', description: 'The message could not be queued' },
     ],
