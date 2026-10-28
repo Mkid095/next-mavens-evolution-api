@@ -26,6 +26,10 @@ services:
       # The daily backup lands here on the host. Mounted read-only so the
       # platform can see whether the backup stopped running — a backup that
       # silently stopped is worse than one that never started.
+      #
+      # The directory must exist and belong to the user the backup script
+      # runs as; Docker creates a missing one as root, and the backup
+      # would then fail to write into it.
       - /home/whatsapp/backups:/home/whatsapp/backups:ro
     networks:
       - platform-net
