@@ -83,10 +83,13 @@ interface MessageCommandRow {
  *
  * Lifecycle: queued → processing → sent | failed | skipped
  *   - `failed`  — the engine rejected the message (or retries were exhausted)
- *   - `skipped` — the anti-ban guard refused the recipient permanently
- *                 (suppressed contact / high block rate). Terminal: never
- *                 retried, because retrying a suppressed contact is exactly
- *                 what gets a number banned.
+ *   - `skipped` — the message can never be delivered: the anti-ban guard
+ *                 refused the recipient permanently (suppressed contact /
+ *                 high block rate), or the number is not on WhatsApp at
+ *                 all. Terminal: never retried, because retrying a
+ *                 suppressed contact is exactly what gets a number banned,
+ *                 and a number with no WhatsApp account will still have
+ *                 none tomorrow.
  *   - `queued`  — the anti-ban guard refused the recipient temporarily
  *                 (rate limit). The command stays queued and is retried once
  *                 the limiter window has passed.
@@ -593,6 +596,25 @@ export class OutboxWorkerService {
       // with.
       const errorMsg = describeError(error);
 
+      /*
+       * A number that is not on WhatsApp is not a fault of the
+       * platform — it is a fault of the request. The message can never
+       * be delivered, so retrying it is pointless, and counting it as a
+       * failure makes the platform report itself degraded, which sends
+       * a watchdog looking for a problem that is not there.
+       *
+       * It is parked as `skipped`: terminal, never retried, and visible
+       * in the summary as a number that was not recognised on WhatsApp.
+       */
+      if (isNotOnWhatsapp(errorMsg)) {
+        await this.repository.platformMessageCommand.update({
+          where: { id: cmd.id },
+          data: { status: 'skipped', lastError: errorMsg },
+        });
+        this.logger.warn(`MessageCommand ${cmd.id} skipped — ${errorMsg}`);
+        return false;
+      }
+
       // Check if max attempts reached
       const updated = await this.repository.platformMessageCommand.findUnique({
         where: { id: cmd.id },
@@ -656,4 +678,15 @@ export class OutboxWorkerService {
       this.logger.error(`Failed to record usage for MessageCommand ${cmd.messageId}: ${error}`);
     }
   }
+}
+
+/**
+ * Is this failure because the recipient is not on WhatsApp?
+ *
+ * The engine says so in words — "The number 2547… is not on WhatsApp" —
+ * and that is the only thing that distinguishes a request that cannot
+ * ever work from one that failed for a reason worth retrying.
+ */
+function isNotOnWhatsapp(message: string): boolean {
+  return /not on whatsapp/i.test(message);
 }
