@@ -55,11 +55,20 @@ class ApiAuditMiddleware {
       if (!match) return;
 
       const projectPublicId = match[2];
-      const path = match[0];
+      // The scope the request was made in — the account and project.
+      const scope = match[0];
 
-      // The logs endpoint reads the audit trail — auditing the read would
-      // make every page of the log write a row of its own.
-      if (SKIPPED_SUFFIXES.some((suffix) => path.endsWith(suffix))) return;
+      /*
+       * The logs endpoint reads the audit trail — auditing the read would
+       * make every page of the log write a row of its own.
+       *
+       * This has to be tested against the URL that was called, not
+       * against the scope: the scope ends at the project, so it never
+       * ends in "/logs" and the skip never fired. Every read of the log
+       * wrote a row into the log it had just read.
+       */
+      const called = originalUrl.split('?')[0];
+      if (SKIPPED_SUFFIXES.some((suffix) => called.endsWith(suffix))) return;
 
       const platformKey = (req as Request & { platformKey?: { accountId?: string } }).platformKey;
       const platformTenant = (req as Request & { platformTenant?: { accountId?: string } }).platformTenant;
@@ -68,17 +77,20 @@ class ApiAuditMiddleware {
 
       let projectId: string | null = null;
       if (projectPublicId) {
-        const scope = await projectScopeService.resolveUnscoped(projectPublicId);
-        projectId = scope?.id ?? null;
+        const projectScope = await projectScopeService.resolveUnscoped(projectPublicId);
+        projectId = projectScope?.id ?? null;
       }
 
       await this.auditService.record(
         accountId,
         'API_REQUEST',
-        { type: 'api', id: path },
+        { type: 'api', id: scope },
         {
           method: req.method,
-          path,
+          // The path that was called — the whole one. The scope is what
+          // the row is filed under, but an audit trail that records only
+          // the scope records nothing about what was actually done.
+          path: called,
           status: res.statusCode,
           durationMs: Date.now() - startedAt,
           projectPublicId: projectPublicId ?? undefined,
