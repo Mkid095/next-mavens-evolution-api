@@ -34,6 +34,7 @@ import { AuditService } from './services/audit.service';
 import { discoveryResponse } from './services/oauth-discovery';
 import { projectService } from './services/project.service';
 import { resolveRequestProject } from './services/request-project';
+import { collectRoutes, MountedRoute } from './services/route-introspection';
 import { PlatformTenant } from './types/platform-tenant';
 
 /** PBKDF2-based password hashing (no external dependency) */
@@ -268,18 +269,12 @@ const hybridInstanceChain = [
 ];
 router.use('/instances', hybridInstanceChain, messageRoutes);
 
-/**
- * Mount instance-scoped message command route.
- * Uses base platform chain (no scopeEnforce — instance ownership verified in handler).
+/*
+ * The message route used to be mounted a second time here, behind an
+ * API-key-only chain. Express takes the first match, so that mount could
+ * never run: the route has always answered with the hybrid chain above
+ * — an API key OR a dashboard session.
  */
-const instanceChain = [
-  platformAuthMiddleware.authenticate,
-  tenantResolveMiddleware.resolve,
-  idempotencyMiddleware.check,
-  platformRateLimitMiddleware.apply,
-  entitlementMiddleware.checkMessageLimit,
-];
-router.use('/instances', instanceChain, messageRoutes);
 
 /**
  * Mount publicId-based message route.
@@ -345,5 +340,16 @@ router.get(
     });
   },
 );
+
+/**
+ * Every route this router mounts, with its full path.
+ *
+ * Read from the live router on demand rather than captured once: routers
+ * are mounted on this one after this module is loaded, and a snapshot
+ * taken now would not know about them.
+ */
+export function mountedRoutes(): MountedRoute[] {
+  return collectRoutes(router);
+}
 
 export { router as platformRouter };

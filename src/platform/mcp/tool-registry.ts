@@ -88,6 +88,8 @@ export const TOOL_SCOPES: Record<string, string[]> = {
   list_groups: ['contacts:read'],
   // Documentation
   get_documentation: ['docs:read'],
+  list_api_endpoints: ['docs:read'],
+  get_api_endpoint: ['docs:read'],
 };
 
 // ─── Tool registry (SINGLE SOURCE OF TRUTH) ───────────────────────────────────
@@ -479,6 +481,37 @@ export const MCP_TOOLS: McpTool[] = [
   },
 
   // ── Documentation ──────────────────────────────────────────────────────────
+  {
+    name: 'list_api_endpoints',
+    category: 'documentation',
+    description:
+      'List every endpoint the platform exposes, with its method, path, what it does and how it is authenticated. This is the API reference as data.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tag: {
+          type: 'string',
+          description:
+            'Only the endpoints in this group: instances, messages, webhooks, api-keys, projects, logs, authentication, mcp, documentation, activity, contacts-groups, account, platform',
+        },
+        query: { type: 'string', description: 'Only the endpoints whose path or summary contains this text' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'get_api_endpoint',
+    category: 'documentation',
+    description: 'Read one endpoint in full — its parameters, request body and responses.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        method: { type: 'string', description: 'The HTTP method, e.g. GET or POST' },
+        path: { type: 'string', description: 'The path, e.g. /api/v1/messages/send' },
+      },
+      required: ['method', 'path'],
+    },
+  },
   {
     name: 'get_documentation',
     category: 'documentation',

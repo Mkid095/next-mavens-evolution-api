@@ -121,6 +121,13 @@ export const DOC_INDEX: DocIndexEntry[] = [
     ],
   },
   {
+    slug: 'api-reference',
+    section: 'api-reference',
+    title: 'API reference',
+    description: 'Every endpoint the platform exposes, read from the code itself.',
+    topics: [],
+  },
+  {
     slug: 'message-lifecycle',
     section: 'api-reference',
     title: 'Message lifecycle',
@@ -223,6 +230,7 @@ export const DOC_INDEX: DocIndexEntry[] = [
       'Plans',
       'Health',
       'The documentation as an API',
+      'The status endpoint, and the API reference',
     ],
   },
   {
@@ -325,6 +333,7 @@ export const DOC_INDEX: DocIndexEntry[] = [
       'Projects',
       'Instances',
       'Messages',
+      'The API reference',
       'Reading how a message went',
       'API keys',
       'Webhooks',

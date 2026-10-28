@@ -7,6 +7,7 @@ import path from 'node:path';
 
 import { Command } from 'commander';
 
+import { registerApiCommand } from './commands/api';
 import { registerAuthCommands } from './commands/auth';
 import { registerDocsCommand } from './commands/docs';
 import { registerInstancesCommand } from './commands/instances';
@@ -86,6 +87,7 @@ Configuration:
   addCommonOptions(program);
   program.option('--json', 'Print raw JSON where the command supports it');
 
+  registerApiCommand(program);
   registerAuthCommands(program);
   registerProjectsCommand(program);
   registerInstancesCommand(program);

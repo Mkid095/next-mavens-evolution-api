@@ -1028,6 +1028,53 @@ export async function executeTool(
       // DOCUMENTATION
       // ══════════════════════════════════════════════════════
 
+      case 'list_api_endpoints': {
+        const { tag, query } = params as { tag?: string; query?: string };
+        const { endpointSummary } = await import('../services/openapi.service');
+
+        let endpoints = endpointSummary();
+        if (tag) {
+          const wanted = tag.toLowerCase();
+          endpoints = endpoints.filter((e) => e.tag.toLowerCase() === wanted || e.tag.toLowerCase().includes(wanted));
+        }
+        if (query) {
+          const needle = query.toLowerCase();
+          endpoints = endpoints.filter(
+            (e) => e.path.toLowerCase().includes(needle) || e.summary.toLowerCase().includes(needle),
+          );
+        }
+
+        return {
+          ok: true,
+          data: {
+            total: endpoints.length,
+            endpoints: endpoints.map((e) => ({
+              method: e.method,
+              path: e.path,
+              summary: e.summary,
+              auth: e.auth,
+              group: e.tag,
+              docs: e.docs,
+            })),
+          },
+        };
+      }
+
+      case 'get_api_endpoint': {
+        const { method, path } = params as { method?: string; path?: string };
+        if (!method || !path) {
+          return fail(JSONRPC_INVALID_PARAMS, 'method and path are required');
+        }
+        const { findEndpoint } = await import('../services/openapi.service');
+        const endpoint = findEndpoint(method, path);
+        if (!endpoint) {
+          return fail(-32004, `No endpoint matches ${method.toUpperCase()} ${path}`, {
+            hint: 'Call list_api_endpoints to see what exists.',
+          });
+        }
+        return { ok: true, data: endpoint };
+      }
+
       case 'get_documentation': {
         const { page, query } = params as { page?: string; query?: string };
         const pageId = page?.trim();
