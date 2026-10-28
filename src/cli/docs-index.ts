@@ -109,7 +109,16 @@ export const DOC_INDEX: DocIndexEntry[] = [
     section: 'api-reference',
     title: 'Messages API',
     description: 'Send text messages, with idempotency, against a paced queue.',
-    topics: ['Send a message', 'Only text is delivered', 'Idempotency', 'The instance-scoped route'],
+    topics: [
+      'Send a message',
+      'Media, and what is not supported',
+      'Send a media message',
+      'Read the state of a message',
+      'How a broadcast is doing',
+      'Which numbers are on WhatsApp',
+      'Idempotency',
+      'The instance-scoped route',
+    ],
   },
   {
     slug: 'message-lifecycle',

@@ -1,6 +1,6 @@
 {
   "name": "nextmavens-fidscript-whatsapp-api",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Next Mavens Fidscript WhatsApp API - Enterprise WhatsApp Business API Platform",
   "main": "./dist/main.js",
   "type": "commonjs",
