@@ -526,12 +526,17 @@ export class OutboxWorkerService {
       // Success — mark as sent
       // Canonical messageId is msg_xxx (returned to API caller via idempotency response)
       // Engine ref (Baileys JID) is stored internally for tracing
+      //
+      // The error is cleared: a message that was deferred by the rate
+      // limiter and then went out has no error, and leaving the note
+      // behind makes a delivered message look like a broken one.
       await this.repository.platformMessageCommand.update({
         where: { id: cmd.id },
         data: {
           status: 'sent',
           sentAt: new Date(),
           engineRef: result.engineRef,
+          lastError: null,
         },
       });
 

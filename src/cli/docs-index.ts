@@ -108,7 +108,7 @@ export const DOC_INDEX: DocIndexEntry[] = [
     slug: 'messages',
     section: 'api-reference',
     title: 'Messages API',
-    description: 'Send text messages, with idempotency, against a paced queue.',
+    description: 'Send text and media, with idempotency, against a paced queue — and read how they went.',
     topics: [
       'Send a message',
       'Media, and what is not supported',
@@ -276,7 +276,7 @@ export const DOC_INDEX: DocIndexEntry[] = [
     section: 'mcp',
     title: 'MCP — Tools',
     description: 'The complete catalogue: eight categories and thirty-one tools.',
-    topics: ['Tool names that do not exist', 'get_documentation', 'send_media does not deliver media'],
+    topics: ['Tool names that do not exist', 'get_documentation', 'send_media delivers media'],
   },
   {
     slug: 'mcp-scopes',
@@ -290,7 +290,12 @@ export const DOC_INDEX: DocIndexEntry[] = [
     section: 'sdks',
     title: 'cURL Reference',
     description: 'Shell examples for scripts, pipelines and CI.',
-    topics: ['Send a text message', 'List the instances and read the JSON', 'Fail loudly on errors'],
+    topics: [
+      'Send a text message',
+      'Send a picture, and read how it went',
+      'List the instances and read the JSON',
+      'Fail loudly on errors',
+    ],
   },
   {
     slug: 'python',
@@ -320,6 +325,7 @@ export const DOC_INDEX: DocIndexEntry[] = [
       'Projects',
       'Instances',
       'Messages',
+      'Reading how a message went',
       'API keys',
       'Webhooks',
       'MCP',
